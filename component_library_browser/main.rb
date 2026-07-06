@@ -20,6 +20,7 @@ require_relative 'services/preview_regenerator'
 require_relative 'services/pack_transfer'
 require_relative 'tools/array_tool'
 require_relative 'tools/pick_source_tool'
+require_relative 'services/updater'
 
 module Drale
   module ComponentLibraryBrowser
@@ -99,6 +100,7 @@ module Drale
       setup_toolbar
       setup_context_menu
       Logger.info('Плагин загружен')
+      schedule_background_update_check
     end
 
     def open_library
@@ -830,7 +832,7 @@ module Drale
       close_live_plugin_sessions_before_reload
 
       plugin_dir = __dir__
-      reload_paths = [
+reload_paths = [
         'fs.rb',
         'storage.rb',
         'logger.rb',
@@ -840,6 +842,7 @@ module Drale
         'services/metadata.rb',
         'services/preview_regenerator.rb',
         'services/pack_transfer.rb',
+        'services/updater.rb',
         'tools/pick_source_tool.rb',
         'tools/array_tool.rb',
         'array/array_controller.rb',
@@ -852,11 +855,58 @@ module Drale
         load File.join(plugin_dir, relative_path)
       end
 
-      Sketchup.status_text = 'Component Library Browser перезагружен.'
+Sketchup.status_text = 'Component Library Browser перезагружен.'
       true
     rescue StandardError => error
       show_error('Перезагрузка плагина', error)
       false
+    end
+
+    def check_updates
+      result = Updater.check_for_updates
+      if result.nil?
+        UI.messagebox("Не удалось проверить обновления.\nПроверьте подключение к интернету.")
+      elsif result['available']
+        msg = "Доступно обновление: v#{result['current_version']} → v#{result['latest_version']}\n\nЗайдите в «Установить обновление...» для загрузки."
+        UI.messagebox(msg, MB_MULTILINE)
+      elsif result['error']
+        UI.messagebox("Ошибка: #{result['error']}")
+      else
+        UI.messagebox("Установлена последняя версия: v#{result['current_version']}")
+      end
+      true
+    rescue StandardError => error
+      show_error('Проверка обновлений', error)
+      false
+    end
+
+    def apply_update_with_reload
+      confirmed = UI.messagebox(
+        "Будет скачана последняя версия с GitHub и установлена.\n" \
+        "Плагин перезагрузится автоматически.\n\n" \
+        "Продолжить?",
+        MB_YESNO
+      )
+      return false unless confirmed == 6
+
+      Updater.apply_and_reload
+    rescue StandardError => error
+      show_error('Установка обновления', error)
+      false
+    end
+
+    def schedule_background_update_check
+      UI.start_timer(5.0, false) do
+        background_update_check
+      end
+    rescue StandardError
+    end
+
+    def background_update_check
+      result = Updater.check_for_updates(background: true)
+      return unless result.is_a?(Hash) && result['available']
+
+      Logger.info("Фоновое обнаружение обновления: v#{result['current_version']} → v#{result['latest_version']}")
     end
 
     def array_pick_from_library(item_id)
@@ -1568,12 +1618,24 @@ module Drale
         status: "\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u043b\u043e\u0433 \u043f\u043b\u0430\u0433\u0438\u043d\u0430."
       ) { open_log_file }
 
-      @commands[:reload_plugin] = build_command(
+@commands[:reload_plugin] = build_command(
         menu_text: 'Перезагрузить плагин',
         tooltip: 'Перезагрузить Component Library Browser без перезапуска SketchUp',
         status: 'Перезагрузить Ruby-код плагина Component Library Browser.',
         icon_prefix: 'reset'
       ) { reload_plugin! }
+
+      @commands[:check_updates] = build_command(
+        menu_text: 'Проверить обновления...',
+        tooltip: 'Проверить наличие новой версии на GitHub',
+        status: 'Проверить доступные обновления плагина на GitHub.'
+      ) { check_updates }
+
+      @commands[:apply_update] = build_command(
+        menu_text: 'Установить обновление...',
+        tooltip: 'Скачать и установить последнюю версию с GitHub',
+        status: 'Скачать обновление с GitHub, установить и перезагрузить плагин.'
+      ) { apply_update_with_reload }
     end
 
     def build_command(menu_text:, tooltip:, status:, icon_prefix: nil)
@@ -1605,7 +1667,10 @@ module Drale
       menu.add_item(@commands[:export_pack])
       menu.add_item(@commands[:import_pack])
       menu.add_separator
-      menu.add_item(@commands[:open_log])
+menu.add_item(@commands[:open_log])
+      menu.add_separator
+      menu.add_item(@commands[:check_updates])
+      menu.add_item(@commands[:apply_update])
       menu.add_item(@commands[:reload_plugin])
       @menu_ready = true
     end
