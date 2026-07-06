@@ -1,0 +1,16 @@
+﻿Checkpoint: window array ~90% working
+Created: 2026-03-12 01:19:10
+
+Working:
+- SketchUp no longer crashes on pipette select.
+- Window preview appears.
+- LMB lock and apply mostly work.
+- Cutting/gluing mostly works.
+
+Remaining bugs:
+1. If source window is picked from a YZ-like wall and previewed on the opposite wall with opposite facing, the first window orientation is still wrong compared to native SketchUp copy/paste.
+2. Grid replication direction is inconsistent across walls: what should go right/up can go left/down on some faces.
+
+Target behavior:
+- First placed window should match native SketchUp insertion/copy exactly.
+- Grid should always replicate from the anchor as right + up in wall-local logic.

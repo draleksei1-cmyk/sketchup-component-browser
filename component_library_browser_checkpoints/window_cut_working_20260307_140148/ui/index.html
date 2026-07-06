@@ -1,0 +1,276 @@
+﻿<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Библиотека компонентов</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-top">
+          <button id="sidebar-toggle" class="sidebar-toggle" title="Свернуть/развернуть панель">&lt;&lt;</button>
+          <div class="sidebar-head collapsible">
+            <h1>Библиотека</h1>
+          </div>
+        </div>
+
+        <nav class="filters collapsible">
+          <button class="filter-btn active" data-filter="all">Все</button>
+          <button class="filter-btn" data-filter="favorites">Избранное</button>
+          <button class="filter-btn" data-filter="recent">Недавние</button>
+          <button class="filter-btn" data-filter="in_model">В модели</button>
+        </nav>
+        <button id="refresh-in-model-btn" class="model-refresh-btn collapsible" type="button" title="Обновить список элементов из текущей модели" hidden>
+          Обновить «В модели»
+        </button>
+
+        <div class="section-title collapsible">Категории</div>
+        <div class="category-actions collapsible">
+          <button id="category-add" class="icon-btn icon-add" title="Добавить категорию" aria-label="Добавить категорию">+</button>
+          <button id="category-rename" class="icon-btn icon-edit" title="Переименовать категорию" aria-label="Переименовать категорию">&#9998;</button>
+          <button id="category-delete" class="icon-btn icon-delete" title="Удалить категорию" aria-label="Удалить категорию">&#10005;</button>
+          <button id="category-regen" class="icon-btn" title="Пересоздать превью категории" aria-label="Пересоздать превью категории">&#8635;</button>
+        </div>
+        <div class="category-list collapsible" id="category-list"></div>
+
+        <div class="sidebar-actions collapsible">
+          <button id="save-selected-btn">Сохранить выделенное</button>
+          <button id="settings-btn" class="settings-icon-btn" title="Настройки" aria-label="Настройки">&#9881;</button>
+        </div>
+      </aside>
+
+      <main class="content" id="content-root">
+        <div class="top-sticky">
+          <header class="toolbar">
+            <div class="search-wrap">
+              <input id="search" type="search" placeholder="Поиск по имени, тегам, категории..." />
+            </div>
+            <div class="refresh-wrap">
+              <button id="refresh-btn" class="refresh-btn" type="button" title="Обновить список" aria-label="Обновить список">&#8635;</button>
+              <button id="refresh-menu-btn" class="refresh-menu-btn" type="button" title="Варианты обновления" aria-label="Варианты обновления">&#9662;</button>
+              <span id="refresh-status" class="refresh-status" hidden></span>
+            </div>
+            <div class="size-wrap">
+              <span class="size-label">Размер карточек:</span>
+              <div class="size-buttons" role="group" aria-label="Размер карточек">
+                <button class="size-btn" data-size="small" title="Маленькие">S</button>
+                <button class="size-btn active" data-size="medium" title="Средние">M</button>
+                <button class="size-btn" data-size="large" title="Большие">L</button>
+              </div>
+            </div>
+            <div class="weight-wrap">
+              <select id="weight-filter" title="Фильтр по тяжести">
+                <option value="all">Все</option>
+                <option value="light">Только лёгкие</option>
+                <option value="heavy">Только тяжёлые</option>
+              </select>
+            </div>
+          </header>
+          <div class="pinned-tabs" id="pinned-tabs"></div>
+          <p class="hint">Один клик по карточке открывает инспектор справа. Двойной клик запускает вставку.</p>
+          <div class="status-line" id="status-line" hidden></div>
+          <div class="array-pick-banner" id="array-pick-banner" hidden></div>
+        </div>
+
+        <div class="cards-scroll" id="cards-scroll">
+          <section class="grid size-medium" id="cards-grid"></section>
+        </div>
+
+        <div class="pagination-bar">
+          <div class="page-size-wrap" role="group" aria-label="Элементов на странице">
+            <span>На странице:</span>
+            <button class="page-size-btn" data-page-size="10">10</button>
+            <button class="page-size-btn active" data-page-size="25">25</button>
+            <button class="page-size-btn" data-page-size="50">50</button>
+          </div>
+          <div class="page-nav-wrap">
+            <button id="page-prev" class="page-nav-btn" title="Предыдущая страница">&lt;</button>
+            <div id="page-numbers" class="page-numbers"></div>
+            <button id="page-next" class="page-nav-btn" title="Следующая страница">&gt;</button>
+          </div>
+          <div id="page-info" class="page-info"></div>
+        </div>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <div class="inspector-header">
+          <h2 id="inspector-title">Инспектор</h2>
+          <button id="inspector-toggle" class="inspector-toggle" title="Свернуть/развернуть инспектор" aria-label="Свернуть/развернуть инспектор">&#10095;</button>
+        </div>
+
+        <div class="inspector-body" id="inspector-body">
+          <div id="inspector-empty" class="inspector-empty">Выберите карточку для просмотра и действий.</div>
+
+          <section id="inspector-library" class="inspector-section" hidden>
+            <div class="inspector-preview-wrap">
+              <img id="inspector-preview" class="inspector-preview" alt="Превью" />
+              <div class="inspector-preview-actions">
+                <button id="inspector-open-lightbox" type="button">Увеличить</button>
+                <button id="inspector-regen-preview" type="button">&#8635; Пересоздать превью</button>
+              </div>
+            </div>
+
+            <div class="inspector-field">
+              <label for="inspector-name">Имя</label>
+              <input id="inspector-name" type="text" />
+            </div>
+
+            <div class="inspector-field">
+              <label for="inspector-category">Категория</label>
+              <div class="category-inline">
+                <select id="inspector-category"></select>
+                <button id="inspector-add-category" type="button" title="Новая категория">+</button>
+              </div>
+            </div>
+
+            <div class="inspector-field">
+              <label for="inspector-description">Описание</label>
+              <textarea id="inspector-description" rows="3" placeholder="Краткое описание..." maxlength="400"></textarea>
+            </div>
+
+            <div class="inspector-field">
+              <label for="inspector-tag-input">Теги</label>
+              <div class="tag-input-wrap">
+                <input id="inspector-tag-input" type="text" list="inspector-tag-suggestions" placeholder="Тег и Enter/запятая" />
+                <button id="inspector-tag-add" type="button">Добавить</button>
+              </div>
+              <datalist id="inspector-tag-suggestions"></datalist>
+              <div class="tag-quick-list" id="inspector-tag-quick"></div>
+              <div class="inspector-tags" id="inspector-tags"></div>
+            </div>
+
+            <div class="inspector-actions">
+              <button id="inspector-insert" type="button">Вставить</button>
+              <button id="inspector-brush" type="button">Многократная вставка</button>
+              <button id="inspector-replace" type="button">Заменить выделенное</button>
+              <button id="inspector-replace-from-selection" type="button">Заменить на выделенное в модели</button>
+              <button id="inspector-show-file" type="button">Показать файл в папке</button>
+              <button id="inspector-open-folder" type="button">Открыть папку</button>
+              <button id="inspector-toggle-favorite" type="button">★ Избранное</button>
+              <button id="inspector-delete" type="button" class="danger">Удалить</button>
+            </div>
+          </section>
+
+          <section id="inspector-model" class="inspector-section" hidden>
+            <div class="inspector-field">
+              <label>Имя</label>
+              <div id="model-name" class="readonly-field"></div>
+            </div>
+            <div class="inspector-field">
+              <label>Экземпляров в модели</label>
+              <div id="model-count" class="readonly-field"></div>
+            </div>
+            <div class="inspector-actions">
+              <button id="model-save" type="button">Сохранить в библиотеку...</button>
+              <button id="model-replace" type="button">Заменить выделенное</button>
+              <button id="model-select-all" type="button">Выбрать все в модели</button>
+            </div>
+          </section>
+
+          <section id="inspector-insert-options" class="inspector-section" hidden>
+            <h3>Опции вставки</h3>
+            <div class="insert-options" id="insert-options">
+              <label class="insert-opt-check">
+                <input id="opt-surface" type="checkbox" data-insert-opt="place_on_surface" />
+                <span>Ставить на поверхность</span>
+              </label>
+              <label class="insert-opt-check">
+                <input id="opt-normal" type="checkbox" data-insert-opt="align_to_normal" />
+                <span>Повернуть по нормали</span>
+              </label>
+              <label class="insert-opt-check">
+                <input id="opt-random" type="checkbox" data-insert-opt="random_quadrant" />
+                <span>Случайный поворот</span>
+                <select id="opt-random-step" class="insert-opt-select" title="Шаг поворота">
+                  <option value="90">Шаг 90°</option>
+                  <option value="45">Шаг 45°</option>
+                  <option value="30">Шаг 30°</option>
+                  <option value="15">Шаг 15°</option>
+                  <option value="10">Шаг 10°</option>
+                  <option value="5">Шаг 5°</option>
+                </select>
+              </label>
+              <label class="insert-opt-check">
+                <input id="opt-ground" type="checkbox" data-insert-opt="drop_to_ground" />
+                <span>Притянуть к земле</span>
+              </label>
+            </div>
+            <div class="insert-options-note">Опции применяются для обычной и многократной вставки.</div>
+          </section>
+        </div>
+      </aside>
+
+      <button id="inspector-expand" class="inspector-expand" hidden title="Развернуть инспектор" aria-label="Развернуть инспектор">&#10094;</button>
+    </div>
+
+    <div class="settings-modal-backdrop" id="settings-backdrop" hidden>
+      <div class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <h2 id="settings-title">Настройки</h2>
+        <div class="settings-row">
+          <label>Папка хранения</label>
+          <div id="settings-root-path" class="settings-root-path">Папка не выбрана</div>
+        </div>
+        <div class="settings-row">
+          <label for="settings-heavy-threshold">Порог тяжёлого (faces_count)</label>
+          <div class="settings-threshold-row">
+            <input id="settings-heavy-threshold" type="number" min="1" step="1000" />
+            <button id="settings-save-threshold" type="button">Сохранить порог</button>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button id="settings-change-root" type="button">Изменить папку...</button>
+          <button id="settings-scan" type="button">Сканировать библиотеку</button>
+          <button id="settings-regen-all" type="button">Пересоздать все превью</button>
+          <button id="settings-export-pack" type="button">Экспортировать pack...</button>
+          <button id="settings-import-pack" type="button">Импортировать pack...</button>
+        </div>
+        <div class="settings-close-row">
+          <button id="settings-close" type="button">Закрыть</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="lightbox-backdrop" id="lightbox-backdrop" hidden>
+      <div class="lightbox" role="dialog" aria-modal="true" aria-label="Просмотр превью">
+        <button id="lightbox-close" class="lightbox-close" type="button" aria-label="Закрыть">&#10005;</button>
+        <img id="lightbox-image" alt="Увеличенное превью" />
+      </div>
+    </div>
+
+    <template id="card-template">
+      <article class="card" draggable="false">
+        <button class="card-favorite" title="Избранное" aria-label="Избранное">&#9733;</button>
+        <button class="card-delete" title="Удалить" aria-label="Удалить">&#128465;</button>
+        <div class="thumb-wrap">
+          <img class="thumb" alt="Превью" />
+        </div>
+        <div class="card-body">
+          <h3 class="name"></h3>
+          <p class="meta"></p>
+          <div class="tags"></div>
+        </div>
+      </article>
+    </template>
+
+    <div id="card-context-menu" class="card-context-menu" hidden>
+      <button type="button" data-action="insert">Вставить</button>
+      <button type="button" data-action="brush">Многократная вставка</button>
+      <button type="button" data-action="replace">Заменить выделенное</button>
+      <button type="button" data-action="replace_from_selection">Заменить на выделенное в модели</button>
+      <button type="button" data-action="show_file">Показать файл в папке</button>
+      <button type="button" data-action="open_folder">Открыть папку</button>
+      <button type="button" data-action="regen_preview">Пересоздать превью</button>
+      <button type="button" data-action="copy_path">Копировать путь</button>
+      <button type="button" data-action="copy_name">Копировать имя</button>
+      <button type="button" data-action="delete">Удалить</button>
+    </div>
+
+    <div id="category-context-menu" class="card-context-menu" hidden>
+      <button type="button" data-action="toggle_pin">Закрепить</button>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

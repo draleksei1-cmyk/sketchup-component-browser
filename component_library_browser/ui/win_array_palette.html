@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Раскладка окон</title>
+    <style>
+      :root {
+        --bg: #f4f8fc;
+        --panel: #ffffff;
+        --line: #c8d8e8;
+        --text: #24415b;
+        --muted: #5b7388;
+        --ok: #2f7d4c;
+        --danger: #a44646;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Bahnschrift", "Trebuchet MS", "Segoe UI", sans-serif;
+        font-size: 12px;
+      }
+
+      .bar {
+        width: 100%;
+        min-height: 66px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        padding: 6px 8px;
+        overflow-x: hidden;
+        white-space: normal;
+      }
+
+      .group {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding-right: 8px;
+        border-right: 1px solid #dbe7f3;
+      }
+
+      .group:last-child { border-right: 0; padding-right: 0; }
+
+      .label { color: var(--muted); }
+
+      button, input { font: inherit; }
+
+      button {
+        border: 1px solid #aec4d9;
+        border-radius: 7px;
+        background: #ecf5ff;
+        color: #1d5078;
+        cursor: pointer;
+        min-height: 26px;
+        padding: 3px 7px;
+      }
+
+      button:hover { border-color: #78a6ce; background: #e4f0fd; }
+
+      button.action-ok {
+        border-color: #8bc9a0;
+        background: #e9f8ee;
+        color: var(--ok);
+        font-weight: 700;
+      }
+
+      button.action-cancel {
+        border-color: #e0b1b1;
+        background: #fdeeee;
+        color: var(--danger);
+        font-weight: 700;
+      }
+
+      button:disabled { opacity: 0.55; cursor: default; }
+
+      input[type="number"] {
+        width: 74px;
+        height: 26px;
+        border: 1px solid #bfd0e2;
+        border-radius: 7px;
+        background: #fff;
+        color: var(--text);
+        padding: 3px 6px;
+      }
+
+      .source-name {
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="bar">
+      <div class="group">
+        <button id="source-model-btn" type="button" title="Выбрать прототип из модели">Пипетка</button>
+        <button id="source-library-btn" type="button" title="Выбрать прототип из библиотеки">Библиотека</button>
+      </div>
+
+      <div class="group">
+        <span class="label">Прототип:</span>
+        <strong id="source-name" class="source-name">Не выбран</strong>
+      </div>
+
+      <div class="group">
+        <span class="label">X:</span>
+        <input id="count-x" type="number" min="1" max="500" step="1" value="1" />
+        <span class="label">Y:</span>
+        <input id="count-y" type="number" min="1" max="500" step="1" value="1" />
+      </div>
+
+      <div class="group">
+        <span class="label">Шаг в осях:</span>
+        <input id="axis-spacing" type="number" min="1" step="10" title="мм" />
+        <span class="label">Высота этажа:</span>
+        <input id="floor-height" type="number" min="1" step="10" title="мм" />
+      </div>
+
+      <div class="group">
+        <button id="apply-btn" class="action-ok" type="button" disabled>Применить</button>
+        <button id="cancel-btn" class="action-cancel" type="button">Отмена</button>
+        <button id="reset-point-btn" type="button">Сброс точки</button>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        const state = { source_ready: false, source_name: 'Не выбран', params: {} };
+        const dom = {};
+        let emitTimer = null;
+
+        function ruby(name, payload) {
+          if (!window.sketchup || typeof window.sketchup[name] !== 'function') return;
+          if (payload === undefined) {
+            window.sketchup[name]();
+          } else if (typeof payload === 'string') {
+            window.sketchup[name](payload);
+          } else {
+            window.sketchup[name](JSON.stringify(payload));
+          }
+        }
+
+        function cacheDom() {
+          dom.sourceModelBtn = document.getElementById('source-model-btn');
+          dom.sourceLibraryBtn = document.getElementById('source-library-btn');
+          dom.sourceName = document.getElementById('source-name');
+          dom.countX = document.getElementById('count-x');
+          dom.countY = document.getElementById('count-y');
+          dom.axisSpacing = document.getElementById('axis-spacing');
+          dom.floorHeight = document.getElementById('floor-height');
+          dom.apply = document.getElementById('apply-btn');
+          dom.cancel = document.getElementById('cancel-btn');
+          dom.reset = document.getElementById('reset-point-btn');
+        }
+
+        function bindEvents() {
+          dom.sourceModelBtn.addEventListener('click', () => ruby('win_select_source_model'));
+          dom.sourceLibraryBtn.addEventListener('click', () => ruby('win_select_source_library'));
+          dom.apply.addEventListener('click', () => ruby('win_apply'));
+          dom.cancel.addEventListener('click', () => ruby('win_cancel'));
+          dom.reset.addEventListener('click', () => ruby('win_reset_point'));
+
+          [dom.countX, dom.countY, dom.axisSpacing, dom.floorHeight].forEach(function (el) {
+            el.addEventListener('change', scheduleEmit);
+            el.addEventListener('input', scheduleEmit);
+          });
+
+          document.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              ruby('win_apply');
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              ruby('win_cancel');
+            }
+          });
+        }
+
+        function scheduleEmit() {
+          if (emitTimer) clearTimeout(emitTimer);
+          emitTimer = setTimeout(function () {
+            emitTimer = null;
+            ruby('win_params_update', collectParams());
+          }, 80);
+        }
+
+        function collectParams() {
+          return {
+            count_x: Number(dom.countX.value || 1),
+            count_y: Number(dom.countY.value || 1),
+            axis_spacing_mm: Number(dom.axisSpacing.value || 0),
+            floor_height_mm: Number(dom.floorHeight.value || 0)
+          };
+        }
+
+        function render() {
+          const p = state.params || {};
+          dom.countX.value = Number(p.count_x != null ? p.count_x : 1);
+          dom.countY.value = Number(p.count_y != null ? p.count_y : 1);
+          dom.axisSpacing.value = Number(p.axis_spacing_mm != null ? p.axis_spacing_mm : 0);
+          dom.floorHeight.value = Number(p.floor_height_mm != null ? p.floor_height_mm : 0);
+          dom.sourceName.textContent = String(state.source_name || 'Не выбран');
+          dom.apply.disabled = !state.source_ready;
+        }
+
+        window.WinPalette = {
+          setState: function (next) {
+            if (!next) return;
+            state.source_ready = !!next.source_ready;
+            state.source_name = next.source_name || 'Не выбран';
+            state.params = next.params || {};
+            render();
+          }
+        };
+
+        document.addEventListener('DOMContentLoaded', function () {
+          cacheDom();
+          bindEvents();
+          render();
+          ruby('win_palette_ready');
+        });
+      })();
+    </script>
+  </body>
+</html>

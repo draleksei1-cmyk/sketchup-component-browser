@@ -1,0 +1,4 @@
+﻿Checkpoint: window_cut_working_20260307_140148
+Date: 2026-03-07
+State: separate window layout tool works, preview/apply/glue/cut opening work.
+Note: this checkpoint was created before removing windows mode from the mixed brick tool.
