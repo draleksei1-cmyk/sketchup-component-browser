@@ -61,19 +61,35 @@ module Drale
       end
 
       def internal_root(lib_root)
-        File.join(lib_root, INTERNAL_DIR)
+        internal_path(lib_root)
       end
 
       def transactions_root(lib_root)
-        File.join(internal_root(lib_root), 'transactions')
+        internal_path(lib_root, 'transactions')
       end
 
       def snapshots_root(lib_root)
-        File.join(internal_root(lib_root), 'snapshots')
+        internal_path(lib_root, 'snapshots')
       end
 
       def trash_root(lib_root)
-        File.join(internal_root(lib_root), 'trash')
+        internal_path(lib_root, 'trash')
+      end
+
+      def transaction_path(lib_root, transaction_id, *segments)
+        internal_path(lib_root, 'transactions', transaction_id.to_s, *segments)
+      end
+
+      def snapshot_path(lib_root, *segments)
+        internal_path(lib_root, 'snapshots', *segments)
+      end
+
+      def trash_path(lib_root, *segments)
+        internal_path(lib_root, 'trash', *segments)
+      end
+
+      def internal_path(lib_root, *segments)
+        to_full_path(lib_root, File.join(INTERNAL_DIR, *segments.map(&:to_s)))
       end
 
       def categories_root(lib_root)

@@ -507,6 +507,7 @@ module Drale
 
       def commit_transaction_catalog!(transaction, catalog)
         atomic_write_json(FS.catalog_path(@lib_root), catalog)
+        test_failure_after!('catalog_replaced')
         transition_transaction!(transaction, 'catalog_committed')
       end
 
@@ -531,22 +532,24 @@ module Drale
         root = FS.transactions_root(@lib_root)
         return unless File.directory?(root)
 
-        Dir.glob(File.join(root, '*.json')).sort.each { |journal| recover_transaction_file!(journal) }
+        Dir.glob(File.join(root, '*.json')).sort.each { |journal| recover_transaction_file!(journal, record_recovery: true) }
         prune_transaction_snapshots!
       end
 
-      def recover_transaction_file!(journal_path)
+      def recover_transaction_file!(journal_path, record_recovery: false)
         transaction = JSON.parse(File.read(journal_path, encoding: 'UTF-8'))
         transaction['journal_path'] = journal_path
         validate_transaction!(transaction)
         if transaction['state'] == 'catalog_committed'
           cleanup_committed_transaction!(transaction)
+          record_successful_recovery!(transaction) if record_recovery
           return true
         end
 
         verify_recovery_evidence!(transaction)
         if transaction['state'] == 'prepared'
           cleanup_committed_transaction!(transaction)
+          record_successful_recovery!(transaction) if record_recovery
           return true
         end
         transaction.fetch('payloads').each do |payload|
@@ -558,6 +561,7 @@ module Drale
         end
         restore_catalog_snapshot!(transaction)
         cleanup_committed_transaction!(transaction)
+        record_successful_recovery!(transaction) if record_recovery
         true
       rescue StandardError => error
         @recovery_status ||= { 'transactions' => [] }
@@ -610,6 +614,15 @@ module Drale
         prune_transaction_snapshots!
       end
 
+      def record_successful_recovery!(transaction)
+        @recovery_status ||= { 'transactions' => [] }
+        @recovery_status['transactions'] << {
+          'id' => transaction['id'],
+          'operation' => transaction['operation'],
+          'phase' => transaction['state']
+        }
+      end
+
       def prune_transaction_snapshots!
         root = FS.snapshots_root(@lib_root)
         return unless File.directory?(root)
@@ -648,15 +661,15 @@ module Drale
       end
 
       def transaction_root_path(transaction)
-        File.join(FS.transactions_root(@lib_root), transaction.fetch('id'))
+        FS.transaction_path(@lib_root, transaction.fetch('id'))
       end
 
       def transaction_journal_path(txid)
-        File.join(FS.transactions_root(@lib_root), "#{txid}.json")
+        FS.transaction_path(@lib_root, "#{txid}.json")
       end
 
       def transaction_snapshot_path(transaction)
-        File.join(FS.snapshots_root(@lib_root), "#{transaction.fetch('id')}-library.json")
+        FS.snapshot_path(@lib_root, "#{transaction.fetch('id')}-library.json")
       end
 
       def transaction_payload_path(item_id, name)
@@ -666,7 +679,7 @@ module Drale
       end
 
       def transaction_backup_path(transaction, name)
-        File.join(transaction_root_path(transaction), 'before', name)
+        FS.transaction_path(@lib_root, transaction.fetch('id'), 'before', name)
       end
 
       def transaction_staged_path(transaction, name)
@@ -771,7 +784,8 @@ module Drale
       def load_v4_index
         assets, recovery = load_v4_assets
         catalog = read_v4_catalog
-        unless catalog_matches_assets?(catalog, assets) || Array(@recovery_status && @recovery_status['transactions']).any?
+        unresolved_recovery = Array(@recovery_status && @recovery_status['transactions']).select { |entry| entry['status'] == 'recoverable' }
+        unless catalog_matches_assets?(catalog, assets) || unresolved_recovery.any?
           catalog = rebuild_catalog_from_assets!(assets, catalog)
         end
 
@@ -781,7 +795,7 @@ module Drale
           'updated_at' => FS.now_iso8601,
           'categories' => assets.map { |asset| asset['category'] }.uniq.sort,
           'items' => assets,
-          'recovery' => recovery + Array(@recovery_status && @recovery_status['transactions'])
+          'recovery' => recovery + unresolved_recovery
         }
       end
 

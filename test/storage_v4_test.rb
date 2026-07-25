@@ -66,6 +66,15 @@ class StorageV4Test < Minitest::Test
     File.binwrite(v4_payload_paths(root).fetch('preview.png'), bytes)
   end
 
+  def create_directory_link(target, link)
+    File.symlink(target, link)
+    true
+  rescue NotImplementedError, Errno::EACCES, Errno::EPERM
+    return false unless Gem.win_platform?
+
+    system(%(cmd /d /c mklink /J "#{link}" "#{target}"), out: File::NULL, err: File::NULL)
+  end
+
   def write_pending_transaction(root, phase:, operation:, original:, current:, corrupt_backup: false, txid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', payload_overrides: {})
     tx_root = File.join(root, '.clb', 'transactions', txid)
     before_root = File.join(tx_root, 'before')
@@ -522,10 +531,11 @@ class StorageV4Test < Minitest::Test
       write_pending_transaction(root, phase: 'payload_committed', operation: 'replace', original: original,
                                 current: { 'payloads' => { 'model.skp' => 'new-model', 'preview.png' => 'new-preview', 'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'Changed')) }, 'catalog' => original.fetch('catalog') })
 
-      Storage.new(root)
+      recovered = Storage.new(root)
 
       assert_equal original.fetch('payloads'), paths.transform_values { |path| File.binread(path) }
       assert_empty Dir.glob("#{paths.fetch('model.skp')}.new-*")
+      assert_equal({ 'id' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'operation' => 'replace', 'phase' => 'payload_committed' }, recovered.recovery_status.fetch('transactions').first)
     end
   end
 
@@ -625,6 +635,76 @@ class StorageV4Test < Minitest::Test
       assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*.json'))
       assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*', 'before'))
       assert_operator Dir.glob(File.join(root, '.clb', 'snapshots', '*.json')).length, :<=, 20
+    end
+  end
+
+  def test_startup_catalog_committed_keeps_new_payload_and_only_cleans_transaction_artifacts
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      Storage.new(root)
+      paths = v4_payload_paths(root)
+      original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      new_manifest = JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'New door'))
+      new_catalog = JSON.generate('version' => 4, 'created_at' => '2026-07-25T12:00:00Z', 'updated_at' => '2026-07-25T12:00:00Z', 'assets' => [{ 'id' => ASSET_ID, 'asset_rel_path' => "assets/#{ASSET_ID}", 'updated_at' => '2026-07-25T12:00:00Z' }])
+      journal_path = write_pending_transaction(root, phase: 'catalog_committed', operation: 'replace', original: original,
+                                                current: { 'payloads' => { 'model.skp' => 'new-model', 'preview.png' => 'new-preview', 'asset.json' => new_manifest }, 'catalog' => new_catalog })
+
+      recovered = Storage.new(root)
+
+      assert_equal 'new-model', File.binread(paths.fetch('model.skp'))
+      assert_equal new_catalog, File.binread(File.join(root, 'library.json'))
+      refute File.exist?(journal_path)
+      assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*', 'before'))
+      assert_equal({ 'id' => 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'operation' => 'replace', 'phase' => 'catalog_committed' }, recovered.recovery_status.fetch('transactions').first)
+    end
+  end
+
+  def test_failure_after_catalog_replacement_before_journal_phase_restores_old_state
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+      original = v4_payload_paths(root).transform_values { |path| File.binread(path) }
+      original_catalog = File.binread(File.join(root, 'library.json'))
+
+      ENV['CLB_TEST_FAILURE_AFTER'] = 'catalog_replaced'
+      assert_raises(RuntimeError) do
+        storage.replace_v4_asset_payloads!(ASSET_ID, {
+          'model.skp' => 'new-model',
+          'preview.png' => 'new-preview',
+          'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'New door'))
+        })
+      end
+
+      assert_equal original, v4_payload_paths(root).transform_values { |path| File.binread(path) }
+      assert_equal original_catalog, File.binread(File.join(root, 'library.json'))
+      assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*.json'))
+    ensure
+      ENV.delete('CLB_TEST_FAILURE_AFTER')
+    end
+  end
+
+  def test_clb_link_outside_library_aborts_without_touching_external_sentinel
+    Dir.mktmpdir('component-library-parent') do |parent|
+      root = File.join(parent, 'library')
+      outside = File.join(parent, 'outside')
+      FileUtils.mkdir_p([root, outside])
+      sentinel = File.join(outside, 'sentinel.txt')
+      File.binwrite(sentinel, 'do not touch')
+      link = File.join(root, '.clb')
+      linked = create_directory_link(outside, link)
+      skip 'This environment cannot create directory links.' unless linked
+
+      assert_raises(ArgumentError) { Storage.new(root) }
+      assert_equal 'do not touch', File.binread(sentinel)
+      assert_empty Dir.children(outside).reject { |name| name == 'sentinel.txt' }
+    ensure
+      if defined?(link) && File.symlink?(link)
+        File.delete(link)
+      elsif defined?(link) && File.directory?(link)
+        Dir.rmdir(link)
+      end
     end
   end
 end
