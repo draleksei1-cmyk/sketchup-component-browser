@@ -95,7 +95,6 @@ class StorageV4Test < Minitest::Test
       'item_id' => ASSET_ID,
       'created_at' => '2026-07-25T12:00:00Z',
       'updated_at' => '2026-07-25T12:00:00Z',
-      'manifest_snapshot' => { 'bytes' => original.fetch('payloads').fetch('asset.json'), 'sha256' => Digest::SHA256.hexdigest(original.fetch('payloads').fetch('asset.json')) },
       'payloads' => payloads,
       'catalog_snapshot' => {
         'existed' => true,
@@ -463,6 +462,7 @@ class StorageV4Test < Minitest::Test
 
       assert_equal original, v4_payload_paths(root).transform_values { |path| File.binread(path) }
       assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*.json'))
+      assert_empty Dir.glob("#{v4_payload_paths(root).fetch('model.skp')}.new-*")
     ensure
       ENV.delete('CLB_TEST_FAILURE_AFTER')
     end
@@ -518,12 +518,14 @@ class StorageV4Test < Minitest::Test
       Storage.new(root)
       paths = v4_payload_paths(root)
       original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      File.binwrite("#{paths.fetch('model.skp')}.new-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 'staged-model')
       write_pending_transaction(root, phase: 'payload_committed', operation: 'replace', original: original,
                                 current: { 'payloads' => { 'model.skp' => 'new-model', 'preview.png' => 'new-preview', 'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'Changed')) }, 'catalog' => original.fetch('catalog') })
 
       Storage.new(root)
 
       assert_equal original.fetch('payloads'), paths.transform_values { |path| File.binread(path) }
+      assert_empty Dir.glob("#{paths.fetch('model.skp')}.new-*")
     end
   end
 

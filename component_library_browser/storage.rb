@@ -439,7 +439,6 @@ module Drale
             'backup_ready' => false
           }
         end
-        manifest = payloads.find { |payload| payload['name'] == 'asset.json' }
         now = FS.now_iso8601
         transaction = {
           'version' => TRANSACTION_VERSION,
@@ -449,10 +448,6 @@ module Drale
           'item_id' => item_id.to_s,
           'created_at' => now,
           'updated_at' => now,
-          'manifest_snapshot' => {
-            'bytes' => manifest['existed'] ? File.binread(transaction_payload_path(item_id, 'asset.json')) : nil,
-            'sha256' => manifest['sha256']
-          },
           'payloads' => payloads,
           'catalog_snapshot' => {
             'existed' => catalog_existed,
@@ -605,6 +600,10 @@ module Drale
       end
 
       def cleanup_committed_transaction!(transaction)
+        TRANSACTION_PAYLOADS.each do |name|
+          staged_path = transaction_staged_path(transaction, name)
+          File.delete(staged_path) if File.file?(staged_path)
+        end
         root = transaction_root_path(transaction)
         FileUtils.rm_rf(root) if File.directory?(root)
         File.delete(transaction['journal_path']) if transaction['journal_path'] && File.file?(transaction['journal_path'])
