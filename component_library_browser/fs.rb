@@ -41,7 +41,7 @@ module Drale
       end
 
       def asset_dir(lib_root, asset_id)
-        File.join(assets_root(lib_root), asset_id.to_s)
+        to_full_path(lib_root, [ASSETS_DIR, asset_id.to_s].join('/'))
       end
 
       def asset_model_rel_path(asset_id)
@@ -53,7 +53,7 @@ module Drale
       end
 
       def asset_metadata_rel_path(asset_id)
-        asset_rel_path(asset_id, 'metadata.json')
+        asset_rel_path(asset_id, 'asset.json')
       end
 
       def catalog_path(lib_root)

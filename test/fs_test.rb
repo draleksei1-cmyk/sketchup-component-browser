@@ -1,4 +1,5 @@
 require_relative 'test_helper'
+require 'json'
 
 class FSTest < Minitest::Test
   ASSET_ID = '11111111-1111-1111-1111-111111111111'.freeze
@@ -17,7 +18,7 @@ class FSTest < Minitest::Test
   def test_asset_relative_paths_follow_v4_contract
     assert_equal "assets/#{ASSET_ID}/model.skp", FS.asset_model_rel_path(ASSET_ID)
     assert_equal "assets/#{ASSET_ID}/preview.png", FS.asset_preview_rel_path(ASSET_ID)
-    assert_equal "assets/#{ASSET_ID}/metadata.json", FS.asset_metadata_rel_path(ASSET_ID)
+    assert_equal "assets/#{ASSET_ID}/asset.json", FS.asset_metadata_rel_path(ASSET_ID)
   end
 
   def test_v4_roots_and_catalog_paths_follow_contract
@@ -29,6 +30,13 @@ class FSTest < Minitest::Test
       assert_equal File.join(root, '.clb', 'transactions'), FS.transactions_root(root)
       assert_equal File.join(root, '.clb', 'snapshots'), FS.snapshots_root(root)
       assert_equal File.join(root, '.clb', 'trash'), FS.trash_root(root)
+    end
+  end
+
+  def test_asset_dir_rejects_an_id_that_escapes_the_library_root
+    with_library_root do |root|
+      assert_raises(ArgumentError) { FS.asset_dir(root, '../../outside') }
+      assert_equal File.join(root, 'assets', ASSET_ID), FS.asset_dir(root, ASSET_ID)
     end
   end
 
@@ -70,5 +78,19 @@ class FSTest < Minitest::Test
       refute FS.path_within_root?(root, "#{root}-other\\asset.skp")
       refute FS.path_within_root?(root, File.dirname(root))
     end
+  end
+
+  def test_v3_fixture_contains_a_current_schema_door_item
+    fixture_path = File.join(__dir__, 'fixtures', 'library_v3', 'library_index.json')
+    index = JSON.parse(File.read(fixture_path))
+    item = index.fetch('items').fetch(0)
+
+    assert_equal 3, index.fetch('version')
+    assert_equal ["Doors"], index.fetch('categories')
+    assert_equal ASSET_ID, item.fetch('id')
+    assert_equal 'Door', item.fetch('name')
+    assert_equal 'Doors', item.fetch('category')
+    assert_equal 'categories/Doors/Door__a1b2c3d4.skp', item.fetch('skp_rel_path')
+    assert_equal "previews/#{ASSET_ID}.png", item.fetch('thumb_rel_path')
   end
 end
