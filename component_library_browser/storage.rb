@@ -394,10 +394,26 @@ module Drale
       end
 
       def detect_format
-        return :v4 if File.directory?(FS.assets_root(@lib_root))
+        return :v4 if v4_asset_tree?
         return :v3 if File.file?(FS.index_path(@lib_root))
+        return :v4 if valid_v4_catalog_activation?
 
         :empty
+      end
+
+      def v4_asset_tree?
+        root = FS.assets_root(@lib_root)
+        File.directory?(root) && Dir.glob(File.join(root, '*')).any? { |path| File.directory?(path) }
+      end
+
+      def valid_v4_catalog_activation?
+        path = FS.catalog_path(@lib_root)
+        return false unless File.file?(path)
+
+        catalog = JSON.parse(File.read(path, encoding: 'UTF-8'))
+        catalog.is_a?(Hash) && catalog['version'] == FORMAT_V4
+      rescue StandardError
+        false
       end
 
       def load_v4_index
@@ -495,17 +511,20 @@ module Drale
       def catalog_matches_assets?(catalog, assets)
         return false unless catalog.is_a?(Hash)
         return false unless catalog.keys.sort == %w[assets created_at updated_at version]
-        return false unless catalog['version'].to_i == FORMAT_V4
+        return false unless catalog['version'] == FORMAT_V4
         return false unless valid_timestamp?(catalog['created_at']) && valid_timestamp?(catalog['updated_at'])
+        return false unless Time.iso8601(catalog['created_at']) <= Time.iso8601(catalog['updated_at'])
 
         catalog['assets'] == v4_catalog_assets(assets)
       end
 
       def rebuild_catalog_from_assets!(assets, existing_catalog = nil)
         now = FS.now_iso8601
+        created_at = catalog_created_at(existing_catalog)
+        created_at = now if Time.iso8601(created_at) > Time.iso8601(now)
         catalog = {
           'version' => FORMAT_V4,
-          'created_at' => catalog_created_at(existing_catalog),
+          'created_at' => created_at,
           'updated_at' => now,
           'assets' => v4_catalog_assets(assets)
         }
@@ -731,7 +750,9 @@ module Drale
       end
 
       def valid_timestamp?(value)
-        !value.to_s.strip.empty? && Time.parse(value.to_s)
+        return false unless value.is_a?(String) && value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
+
+        Time.iso8601(value).utc.iso8601 == value
       rescue StandardError
         false
       end

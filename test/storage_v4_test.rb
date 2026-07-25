@@ -101,6 +101,30 @@ class StorageV4Test < Minitest::Test
     end
   end
 
+  def test_catalog_rebuilds_when_version_or_timestamps_are_not_canonical
+    with_library_root do |root|
+      write_asset(root)
+
+      [
+        { 'version' => '4', 'created_at' => '2026-07-25T10:00:00Z', 'updated_at' => '2026-07-25T12:00:00Z' },
+        { 'version' => 4, 'created_at' => '2026-07-25T13:00:00Z', 'updated_at' => '2026-07-25T12:00:00Z' },
+        { 'version' => 4, 'created_at' => '2026-07-25T10:00:00+00:00', 'updated_at' => '2026-07-25T12:00:00Z' }
+      ].each do |header|
+        File.write(File.join(root, 'library.json'), JSON.pretty_generate(header.merge(
+          'assets' => [{ 'id' => ASSET_ID, 'asset_rel_path' => "assets/#{ASSET_ID}", 'updated_at' => '2026-07-25T12:00:00Z' }]
+        )))
+
+        Storage.new(root)
+        rebuilt = read_catalog(root)
+
+        assert_equal 4, rebuilt.fetch('version')
+        assert_match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/, rebuilt.fetch('created_at'))
+        assert_match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/, rebuilt.fetch('updated_at'))
+        assert_operator Time.iso8601(rebuilt.fetch('created_at')), :<=, Time.iso8601(rebuilt.fetch('updated_at'))
+      end
+    end
+  end
+
   def test_invalid_or_unreadable_assets_are_recoverable_and_not_deleted
     with_library_root do |root|
       invalid_dir = write_asset(root, id: SECOND_ASSET_ID, directory_id: ASSET_ID)
@@ -185,6 +209,19 @@ class StorageV4Test < Minitest::Test
 
       assert_equal 'Door', item.fetch('name')
       assert_equal 'categories/Doors/Door__a1b2c3d4.skp', item.fetch('skp_rel_path')
+      refute File.exist?(File.join(root, 'library.json'))
+    end
+  end
+
+  def test_accidental_empty_assets_directory_does_not_hide_a_v3_library
+    fixture = File.expand_path('fixtures/library_v3', __dir__)
+    with_library_root do |root|
+      FileUtils.cp_r(Dir.glob(File.join(fixture, '*')), root)
+      FileUtils.mkdir_p(File.join(root, 'assets'))
+
+      item = Storage.new(root).item_by_id(ASSET_ID)
+
+      assert_equal 'Door', item && item['name']
       refute File.exist?(File.join(root, 'library.json'))
     end
   end
