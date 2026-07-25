@@ -403,7 +403,17 @@ module Drale
 
       def v4_asset_tree?
         root = FS.assets_root(@lib_root)
-        File.directory?(root) && Dir.glob(File.join(root, '*')).any? { |path| File.directory?(path) }
+        return false unless File.directory?(root)
+
+        Dir.glob(File.join(root, '*')).any? do |asset_dir|
+          next false unless File.directory?(asset_dir)
+
+          manifest = read_asset_manifest(asset_dir)
+          asset, = normalize_v4_asset(File.basename(asset_dir), manifest, asset_dir)
+          !asset.nil?
+        rescue StandardError
+          false
+        end
       end
 
       def valid_v4_catalog_activation?
@@ -411,7 +421,7 @@ module Drale
         return false unless File.file?(path)
 
         catalog = JSON.parse(File.read(path, encoding: 'UTF-8'))
-        catalog.is_a?(Hash) && catalog['version'] == FORMAT_V4
+        catalog_matches_assets?(catalog, [])
       rescue StandardError
         false
       end

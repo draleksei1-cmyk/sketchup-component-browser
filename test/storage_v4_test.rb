@@ -129,6 +129,12 @@ class StorageV4Test < Minitest::Test
     with_library_root do |root|
       invalid_dir = write_asset(root, id: SECOND_ASSET_ID, directory_id: ASSET_ID)
       unreadable_dir = write_asset(root, id: SECOND_ASSET_ID, directory_id: SECOND_ASSET_ID, manifest: { unreadable: true })
+      File.write(File.join(root, 'library.json'), JSON.pretty_generate(
+        'version' => 4,
+        'created_at' => '2026-07-25T10:00:00Z',
+        'updated_at' => '2026-07-25T10:00:00Z',
+        'assets' => []
+      ))
 
       storage = Storage.new(root)
 
@@ -218,6 +224,19 @@ class StorageV4Test < Minitest::Test
     with_library_root do |root|
       FileUtils.cp_r(Dir.glob(File.join(fixture, '*')), root)
       FileUtils.mkdir_p(File.join(root, 'assets'))
+
+      item = Storage.new(root).item_by_id(ASSET_ID)
+
+      assert_equal 'Door', item && item['name']
+      refute File.exist?(File.join(root, 'library.json'))
+    end
+  end
+
+  def test_stale_non_asset_directory_does_not_hide_a_v3_library
+    fixture = File.expand_path('fixtures/library_v3', __dir__)
+    with_library_root do |root|
+      FileUtils.cp_r(Dir.glob(File.join(fixture, '*')), root)
+      FileUtils.mkdir_p(File.join(root, 'assets', 'stale-copy'))
 
       item = Storage.new(root).item_by_id(ASSET_ID)
 
