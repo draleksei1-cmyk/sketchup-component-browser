@@ -12,6 +12,11 @@ module Drale
       CATEGORIES_DIR = 'categories'.freeze
       PREVIEWS_DIR = 'previews'.freeze
 
+      FORMAT_VERSION = 4
+      ASSETS_DIR = 'assets'.freeze
+      INTERNAL_DIR = '.clb'.freeze
+      CATALOG_FILENAME = 'library.json'.freeze
+
       INVALID_FILENAME_CHARS = /[<>:"\/\\|?*\x00-\x1F]/.freeze
       RESERVED_WINDOWS_NAMES = %w[
         CON PRN AUX NUL
@@ -29,6 +34,46 @@ module Drale
 
       def index_path(lib_root)
         File.join(lib_root, INDEX_FILENAME)
+      end
+
+      def assets_root(lib_root)
+        File.join(lib_root, ASSETS_DIR)
+      end
+
+      def asset_dir(lib_root, asset_id)
+        File.join(assets_root(lib_root), asset_id.to_s)
+      end
+
+      def asset_model_rel_path(asset_id)
+        asset_rel_path(asset_id, 'model.skp')
+      end
+
+      def asset_preview_rel_path(asset_id)
+        asset_rel_path(asset_id, 'preview.png')
+      end
+
+      def asset_metadata_rel_path(asset_id)
+        asset_rel_path(asset_id, 'metadata.json')
+      end
+
+      def catalog_path(lib_root)
+        File.join(lib_root, CATALOG_FILENAME)
+      end
+
+      def internal_root(lib_root)
+        File.join(lib_root, INTERNAL_DIR)
+      end
+
+      def transactions_root(lib_root)
+        File.join(internal_root(lib_root), 'transactions')
+      end
+
+      def snapshots_root(lib_root)
+        File.join(internal_root(lib_root), 'snapshots')
+      end
+
+      def trash_root(lib_root)
+        File.join(internal_root(lib_root), 'trash')
       end
 
       def categories_root(lib_root)
@@ -108,7 +153,26 @@ module Drale
       end
 
       def to_full_path(lib_root, rel_path)
-        File.expand_path(rel_path.to_s.tr('/', File::SEPARATOR), lib_root)
+        relative_path = rel_path.to_s
+        raise ArgumentError, 'Relative path cannot be blank.' if relative_path.strip.empty?
+
+        normalized_path = relative_path.tr('\\', '/')
+        if normalized_path.start_with?('/') || normalized_path.match?(/\A[A-Za-z]:/)
+          raise ArgumentError, 'Path must be relative to the library root.'
+        end
+
+        full_path = File.expand_path(normalized_path, File.expand_path(lib_root.to_s))
+        raise ArgumentError, 'Path escapes the library root.' unless path_within_root?(lib_root, full_path)
+
+        full_path
+      end
+
+      def path_within_root?(lib_root, path)
+        root = File.expand_path(lib_root.to_s)
+        candidate = File.expand_path(path.to_s)
+        return true if candidate == root
+
+        candidate.start_with?(root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}")
       end
 
       def extract_short_id(filename)
@@ -176,6 +240,12 @@ module Drale
         system('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script)
       rescue StandardError
         false
+      end
+
+      private
+
+      def asset_rel_path(asset_id, filename)
+        [ASSETS_DIR, asset_id.to_s, filename].join('/')
       end
     end
   end
