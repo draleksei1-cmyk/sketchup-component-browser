@@ -9,6 +9,15 @@ class StorageV4Test < Minitest::Test
   ASSET_ID = '11111111-1111-1111-1111-111111111111'.freeze
   SECOND_ASSET_ID = '22222222-2222-2222-2222-222222222222'.freeze
 
+  def setup
+    @previous_clb_test_mode = ENV['CLB_TEST_MODE']
+    ENV['CLB_TEST_MODE'] = '1'
+  end
+
+  def teardown
+    @previous_clb_test_mode.nil? ? ENV.delete('CLB_TEST_MODE') : ENV['CLB_TEST_MODE'] = @previous_clb_test_mode
+  end
+
   def with_library_root
     Dir.mktmpdir('component-library-v4') { |root| yield root }
   end
@@ -57,8 +66,7 @@ class StorageV4Test < Minitest::Test
     File.binwrite(v4_payload_paths(root).fetch('preview.png'), bytes)
   end
 
-  def write_pending_transaction(root, phase:, operation:, original:, current:, corrupt_backup: false)
-    txid = 'transaction-test-0001'
+  def write_pending_transaction(root, phase:, operation:, original:, current:, corrupt_backup: false, txid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', payload_overrides: {})
     tx_root = File.join(root, '.clb', 'transactions', txid)
     before_root = File.join(tx_root, 'before')
     snapshot_path = File.join(root, '.clb', 'snapshots', "#{txid}-library.json")
@@ -71,27 +79,25 @@ class StorageV4Test < Minitest::Test
       File.binwrite(before_path, corrupt_backup && name == 'model.skp' ? 'corrupt-backup' : bytes)
       {
         'name' => name,
-        'path' => v4_payload_paths(root).fetch(name),
-        'before_path' => before_path,
         'existed' => true,
-        'sha256' => Digest::SHA256.hexdigest(bytes)
-      }
+        'sha256' => Digest::SHA256.hexdigest(bytes),
+        'backup_ready' => true
+      }.merge(payload_overrides.fetch(name, {}))
     end
 
     current.fetch('payloads').each { |name, bytes| File.binwrite(v4_payload_paths(root).fetch(name), bytes) }
     File.binwrite(File.join(root, 'library.json'), current.fetch('catalog'))
     journal = {
-      'version' => 1,
+      'version' => 2,
       'id' => txid,
       'state' => phase,
       'operation' => operation,
       'item_id' => ASSET_ID,
       'created_at' => '2026-07-25T12:00:00Z',
       'updated_at' => '2026-07-25T12:00:00Z',
-      'manifest_snapshot' => { 'path' => v4_payload_paths(root).fetch('asset.json'), 'bytes' => original.fetch('payloads').fetch('asset.json'), 'sha256' => Digest::SHA256.hexdigest(original.fetch('payloads').fetch('asset.json')) },
+      'manifest_snapshot' => { 'bytes' => original.fetch('payloads').fetch('asset.json'), 'sha256' => Digest::SHA256.hexdigest(original.fetch('payloads').fetch('asset.json')) },
       'payloads' => payloads,
       'catalog_snapshot' => {
-        'path' => snapshot_path,
         'existed' => true,
         'sha256' => Digest::SHA256.hexdigest(original.fetch('catalog'))
       }
@@ -462,6 +468,29 @@ class StorageV4Test < Minitest::Test
     end
   end
 
+  def test_backup_copy_failure_leaves_original_payloads_untouched
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+      original = v4_payload_paths(root).transform_values { |path| File.binread(path) }
+
+      ENV['CLB_TEST_FAILURE_AFTER'] = 'backup_model_copied'
+      assert_raises(RuntimeError) do
+        storage.replace_v4_asset_payloads!(ASSET_ID, {
+          'model.skp' => 'new-model',
+          'preview.png' => 'new-preview',
+          'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'New door'))
+        })
+      end
+
+      assert_equal original, v4_payload_paths(root).transform_values { |path| File.binread(path) }
+      assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*.json'))
+    ensure
+      ENV.delete('CLB_TEST_FAILURE_AFTER')
+    end
+  end
+
   def test_startup_recovers_delete_journal_after_payload_quarantined
     with_library_root do |root|
       write_asset(root)
@@ -535,6 +564,45 @@ class StorageV4Test < Minitest::Test
       assert_equal current_catalog, File.binread(File.join(root, 'library.json'))
       assert File.exist?(journal_path)
       assert_includes recovered.recovery_status.fetch('transactions').first.fetch('reason'), 'SHA256'
+    end
+  end
+
+  def test_startup_preserves_external_sentinel_for_traversal_transaction_id
+    with_library_root do |root|
+      write_asset(root)
+      Storage.new(root)
+      sentinel = File.join(root, 'external-sentinel.txt')
+      File.binwrite(sentinel, 'do not touch')
+      journal_path = File.join(root, '.clb', 'transactions', 'invalid-id.json')
+      FileUtils.mkdir_p(File.dirname(journal_path))
+      File.write(journal_path, JSON.generate('version' => 2, 'id' => '../..', 'state' => 'payload_committed', 'operation' => 'replace', 'item_id' => ASSET_ID, 'payloads' => [], 'catalog_snapshot' => { 'existed' => false }))
+
+      recovered = Storage.new(root)
+
+      assert_equal 'do not touch', File.binread(sentinel)
+      assert File.file?(journal_path)
+      assert_includes recovered.recovery_status.fetch('transactions').first.fetch('reason'), 'transaction id'
+    end
+  end
+
+  def test_startup_preserves_external_sentinel_when_journal_contains_path_fields
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      Storage.new(root)
+      sentinel = File.join(root, 'external-sentinel.txt')
+      File.binwrite(sentinel, 'do not touch')
+      paths = v4_payload_paths(root)
+      original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      journal_path = write_pending_transaction(root, phase: 'payload_committed', operation: 'replace', original: original,
+                                                current: { 'payloads' => original.fetch('payloads'), 'catalog' => original.fetch('catalog') },
+                                                payload_overrides: { 'model.skp' => { 'path' => sentinel } })
+
+      recovered = Storage.new(root)
+
+      assert_equal 'do not touch', File.binread(sentinel)
+      assert File.file?(journal_path)
+      assert_includes recovered.recovery_status.fetch('transactions').first.fetch('reason'), 'path field'
     end
   end
 

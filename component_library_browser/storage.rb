@@ -15,6 +15,10 @@ module Drale
       FORMAT_V4 = 4
       INDEX_VERSION = FORMAT_V3
       UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i.freeze
+      TRANSACTION_VERSION = 2
+      TRANSACTION_OPERATIONS = %w[replace delete].freeze
+      TRANSACTION_STATES = %w[prepared payload_backed_up payload_staged payload_committed manifest_committed catalog_committed payload_quarantined].freeze
+      TRANSACTION_PAYLOADS = %w[model.skp preview.png asset.json].freeze
 
       attr_reader :lib_root
 
@@ -417,55 +421,47 @@ module Drale
       private
 
       def prepare_transaction!(operation:, item_id:)
-        txid = SecureRandom.uuid
-        tx_root = File.join(FS.transactions_root(@lib_root), txid)
-        before_root = File.join(tx_root, 'before')
-        snapshot_path = File.join(FS.snapshots_root(@lib_root), "#{txid}-library.json")
-        asset_root = FS.asset_dir(@lib_root, item_id)
-        FileUtils.mkdir_p(before_root)
-        FileUtils.mkdir_p(File.dirname(snapshot_path))
+        raise ArgumentError, 'Invalid transaction operation.' unless TRANSACTION_OPERATIONS.include?(operation.to_s)
+        raise ArgumentError, 'Invalid transaction item id.' unless item_id.to_s.match?(UUID_PATTERN)
 
+        txid = SecureRandom.uuid
+        FileUtils.mkdir_p(FS.transactions_root(@lib_root))
         catalog_path = FS.catalog_path(@lib_root)
         catalog_existed = File.file?(catalog_path)
         catalog_bytes = catalog_existed ? File.binread(catalog_path) : nil
-        atomic_write_bytes(snapshot_path, catalog_bytes || ''.b)
-        payloads = %w[model.skp preview.png asset.json].map do |name|
-          path = File.join(asset_root, name)
+        payloads = TRANSACTION_PAYLOADS.map do |name|
+          path = transaction_payload_path(item_id, name)
           existed = File.file?(path)
           {
             'name' => name,
-            'path' => path,
-            'before_path' => File.join(before_root, name),
-            'staged_path' => "#{path}.new-#{txid}",
             'existed' => existed,
-            'sha256' => existed ? sha256_file(path) : nil
+            'sha256' => existed ? sha256_file(path) : nil,
+            'backup_ready' => false
           }
         end
         manifest = payloads.find { |payload| payload['name'] == 'asset.json' }
         now = FS.now_iso8601
         transaction = {
-          'version' => 1,
+          'version' => TRANSACTION_VERSION,
           'id' => txid,
           'state' => 'prepared',
           'operation' => operation.to_s,
           'item_id' => item_id.to_s,
           'created_at' => now,
           'updated_at' => now,
-          'journal_path' => File.join(FS.transactions_root(@lib_root), "#{txid}.json"),
-          'transaction_root' => tx_root,
           'manifest_snapshot' => {
-            'path' => manifest['path'],
-            'bytes' => manifest['existed'] ? File.binread(manifest['path']) : nil,
+            'bytes' => manifest['existed'] ? File.binread(transaction_payload_path(item_id, 'asset.json')) : nil,
             'sha256' => manifest['sha256']
           },
           'payloads' => payloads,
           'catalog_snapshot' => {
-            'path' => snapshot_path,
             'existed' => catalog_existed,
             'sha256' => catalog_existed ? Digest::SHA256.hexdigest(catalog_bytes) : nil
           }
         }
+        transaction['journal_path'] = transaction_journal_path(txid)
         persist_transaction!(transaction)
+        atomic_write_bytes(transaction_snapshot_path(transaction), catalog_bytes || ''.b)
         transaction
       end
 
@@ -473,8 +469,14 @@ module Drale
         transaction.fetch('payloads').each do |payload|
           next unless payload['existed']
 
-          FileUtils.mkdir_p(File.dirname(payload['before_path']))
-          File.rename(payload['path'], payload['before_path'])
+          source = transaction_payload_path(transaction['item_id'], payload['name'])
+          backup = transaction_backup_path(transaction, payload['name'])
+          atomic_write_bytes(backup, File.binread(source))
+          raise "Backup SHA256 mismatch: #{payload['name']}" unless sha256_file(backup) == payload['sha256']
+
+          payload['backup_ready'] = true
+          persist_transaction!(transaction)
+          test_failure_after!('backup_model_copied') if payload['name'] == 'model.skp'
         end
         transition_transaction!(transaction, 'payload_backed_up')
       end
@@ -482,10 +484,11 @@ module Drale
       def stage_transaction_payloads!(transaction, payloads)
         transaction.fetch('payloads').each do |payload|
           bytes = payloads.fetch(payload['name'])
-          atomic_write_bytes(payload['staged_path'], bytes)
-          raise "Staged payload missing: #{payload['name']}" unless File.file?(payload['staged_path'])
+          staged_path = transaction_staged_path(transaction, payload['name'])
+          atomic_write_bytes(staged_path, bytes)
+          raise "Staged payload missing: #{payload['name']}" unless File.file?(staged_path)
 
-          payload['staged_sha256'] = sha256_file(payload['staged_path'])
+          payload['staged_sha256'] = sha256_file(staged_path)
           expected = Digest::SHA256.hexdigest(bytes.to_s.b)
           raise "Staged payload hash mismatch: #{payload['name']}" unless payload['staged_sha256'] == expected
           persist_transaction!(transaction)
@@ -496,14 +499,14 @@ module Drale
 
       def commit_transaction_payloads!(transaction)
         transaction.fetch('payloads').reject { |payload| payload['name'] == 'asset.json' }.each do |payload|
-          File.rename(payload['staged_path'], payload['path'])
+          File.rename(transaction_staged_path(transaction, payload['name']), transaction_payload_path(transaction['item_id'], payload['name']))
         end
         transition_transaction!(transaction, 'payload_committed')
       end
 
       def commit_transaction_manifest!(transaction)
         manifest = transaction.fetch('payloads').find { |payload| payload['name'] == 'asset.json' }
-        File.rename(manifest['staged_path'], manifest['path'])
+        File.rename(transaction_staged_path(transaction, manifest['name']), transaction_payload_path(transaction['item_id'], manifest['name']))
         transition_transaction!(transaction, 'manifest_committed')
       end
 
@@ -526,7 +529,7 @@ module Drale
       end
 
       def persist_transaction!(transaction)
-        atomic_write_json(transaction.fetch('journal_path'), transaction.reject { |key, _| key == 'journal_path' || key == 'transaction_root' })
+        atomic_write_json(transaction.fetch('journal_path'), transaction.reject { |key, _| key == 'journal_path' })
       end
 
       def recover_pending_transactions!
@@ -540,21 +543,25 @@ module Drale
       def recover_transaction_file!(journal_path)
         transaction = JSON.parse(File.read(journal_path, encoding: 'UTF-8'))
         transaction['journal_path'] = journal_path
-        transaction['transaction_root'] = File.join(FS.transactions_root(@lib_root), transaction.fetch('id'))
+        validate_transaction!(transaction)
         if transaction['state'] == 'catalog_committed'
           cleanup_committed_transaction!(transaction)
           return true
         end
 
         verify_recovery_evidence!(transaction)
+        if transaction['state'] == 'prepared'
+          cleanup_committed_transaction!(transaction)
+          return true
+        end
         transaction.fetch('payloads').each do |payload|
           if payload['existed']
-            File.rename(payload.fetch('before_path'), payload.fetch('path'))
-          elsif File.file?(payload['path'])
-            File.delete(payload['path'])
+            atomic_write_bytes(transaction_payload_path(transaction['item_id'], payload['name']), File.binread(transaction_backup_path(transaction, payload['name'])))
+          elsif File.file?(transaction_payload_path(transaction['item_id'], payload['name']))
+            File.delete(transaction_payload_path(transaction['item_id'], payload['name']))
           end
         end
-        restore_catalog_snapshot!(transaction.fetch('catalog_snapshot'))
+        restore_catalog_snapshot!(transaction)
         cleanup_committed_transaction!(transaction)
         true
       rescue StandardError => error
@@ -569,29 +576,37 @@ module Drale
 
       def verify_recovery_evidence!(transaction)
         transaction.fetch('payloads').each do |payload|
-          next unless payload['existed']
+          next unless payload['existed'] && payload['backup_ready']
 
-          before_path = payload.fetch('before_path')
+          before_path = transaction_backup_path(transaction, payload['name'])
           raise "Backup missing: #{before_path}" unless File.file?(before_path)
           raise "Backup SHA256 mismatch: #{before_path}" unless sha256_file(before_path) == payload.fetch('sha256')
+        end
+        return if transaction['state'] == 'prepared'
+
+        transaction.fetch('payloads').each do |payload|
+          raise "Backup was not ready: #{payload['name']}" unless !payload['existed'] || payload['backup_ready']
         end
         snapshot = transaction.fetch('catalog_snapshot')
         return unless snapshot['existed']
 
-        raise "Catalog snapshot missing: #{snapshot['path']}" unless File.file?(snapshot['path'])
-        raise "Catalog snapshot SHA256 mismatch: #{snapshot['path']}" unless sha256_file(snapshot['path']) == snapshot['sha256']
+        path = transaction_snapshot_path(transaction)
+        raise "Catalog snapshot missing: #{path}" unless File.file?(path)
+        raise "Catalog snapshot SHA256 mismatch: #{path}" unless sha256_file(path) == snapshot['sha256']
       end
 
-      def restore_catalog_snapshot!(snapshot)
+      def restore_catalog_snapshot!(transaction)
+        snapshot = transaction.fetch('catalog_snapshot')
         if snapshot['existed']
-          atomic_write_bytes(FS.catalog_path(@lib_root), File.binread(snapshot.fetch('path')))
+          atomic_write_bytes(FS.catalog_path(@lib_root), File.binread(transaction_snapshot_path(transaction)))
         elsif File.file?(FS.catalog_path(@lib_root))
           File.delete(FS.catalog_path(@lib_root))
         end
       end
 
       def cleanup_committed_transaction!(transaction)
-        FileUtils.rm_rf(transaction['transaction_root']) if transaction['transaction_root'] && File.directory?(transaction['transaction_root'])
+        root = transaction_root_path(transaction)
+        FileUtils.rm_rf(root) if File.directory?(root)
         File.delete(transaction['journal_path']) if transaction['journal_path'] && File.file?(transaction['journal_path'])
         prune_transaction_snapshots!
       end
@@ -601,12 +616,77 @@ module Drale
         return unless File.directory?(root)
 
         pending = Dir.glob(File.join(FS.transactions_root(@lib_root), '*.json')).filter_map do |journal|
-          JSON.parse(File.read(journal, encoding: 'UTF-8')).dig('catalog_snapshot', 'path')
+          transaction = JSON.parse(File.read(journal, encoding: 'UTF-8'))
+          transaction_snapshot_path(transaction) if transaction['version'] == TRANSACTION_VERSION && transaction['id'].to_s.match?(UUID_PATTERN)
         rescue StandardError
           nil
         end
         snapshots = Dir.glob(File.join(root, '*.json')).reject { |path| pending.include?(path) }.sort_by { |path| File.mtime(path) }.reverse
         snapshots.drop(20).each { |path| File.delete(path) }
+      end
+
+      def validate_transaction!(transaction)
+        raise ArgumentError, 'Invalid transaction schema version.' unless transaction['version'] == TRANSACTION_VERSION
+        raise ArgumentError, 'Invalid transaction id.' unless transaction['id'].to_s.match?(UUID_PATTERN)
+        raise ArgumentError, 'Invalid transaction item id.' unless transaction['item_id'].to_s.match?(UUID_PATTERN)
+        raise ArgumentError, 'Invalid transaction operation.' unless TRANSACTION_OPERATIONS.include?(transaction['operation'])
+        raise ArgumentError, 'Invalid transaction state.' unless TRANSACTION_STATES.include?(transaction['state'])
+        raise ArgumentError, 'Journal contains a forbidden path field.' if journal_contains_path_field?(transaction.reject { |key, _| key == 'journal_path' })
+        raise ArgumentError, 'Journal path does not match transaction id.' unless File.expand_path(transaction['journal_path']) == transaction_journal_path(transaction['id'])
+
+        payloads = transaction['payloads']
+        raise ArgumentError, 'Invalid transaction payload list.' unless payloads.is_a?(Array) && payloads.map { |payload| payload['name'] }.sort == TRANSACTION_PAYLOADS.sort
+        payloads.each do |payload|
+          raise ArgumentError, 'Invalid transaction payload.' unless payload.is_a?(Hash) && [true, false].include?(payload['existed'])
+          raise ArgumentError, 'Invalid transaction backup state.' unless payload['backup_ready'].is_a?(TrueClass) || payload['backup_ready'].is_a?(FalseClass)
+          next unless payload['existed']
+
+          raise ArgumentError, 'Invalid transaction payload hash.' unless valid_sha256?(payload['sha256'])
+        end
+        snapshot = transaction['catalog_snapshot']
+        raise ArgumentError, 'Invalid catalog snapshot.' unless snapshot.is_a?(Hash) && [true, false].include?(snapshot['existed'])
+        raise ArgumentError, 'Invalid catalog snapshot hash.' if snapshot['existed'] && !valid_sha256?(snapshot['sha256'])
+      end
+
+      def transaction_root_path(transaction)
+        File.join(FS.transactions_root(@lib_root), transaction.fetch('id'))
+      end
+
+      def transaction_journal_path(txid)
+        File.join(FS.transactions_root(@lib_root), "#{txid}.json")
+      end
+
+      def transaction_snapshot_path(transaction)
+        File.join(FS.snapshots_root(@lib_root), "#{transaction.fetch('id')}-library.json")
+      end
+
+      def transaction_payload_path(item_id, name)
+        raise ArgumentError, 'Invalid transaction payload name.' unless TRANSACTION_PAYLOADS.include?(name)
+
+        File.join(FS.asset_dir(@lib_root, item_id), name)
+      end
+
+      def transaction_backup_path(transaction, name)
+        File.join(transaction_root_path(transaction), 'before', name)
+      end
+
+      def transaction_staged_path(transaction, name)
+        "#{transaction_payload_path(transaction['item_id'], name)}.new-#{transaction['id']}"
+      end
+
+      def journal_contains_path_field?(value)
+        case value
+        when Hash
+          value.any? { |key, child| key.to_s.match?(/path\z/i) || journal_contains_path_field?(child) }
+        when Array
+          value.any? { |child| journal_contains_path_field?(child) }
+        else
+          false
+        end
+      end
+
+      def valid_sha256?(value)
+        value.is_a?(String) && value.match?(/\A[0-9a-f]{64}\z/i)
       end
 
       def sha256_file(path)
