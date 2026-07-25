@@ -815,6 +815,32 @@ class StorageV4Test < Minitest::Test
     end
   end
 
+  def test_v4_replace_merges_only_explicit_metadata_and_preserves_existing_hash
+    with_library_root do |root|
+      write_asset(root, manifest: {
+        'faces_count' => 7, 'edges_count' => 8, 'materials_count' => 9, 'content_hash' => 'kept-hash'
+      })
+      storage = Storage.new(root)
+
+      replaced = storage.replace_item_definition!(ASSET_ID, FakeDefinition.new('replacement'), source: 'component', metadata: { 'faces_count' => 12 })
+
+      assert_equal 12, replaced.fetch('faces_count')
+      assert_equal 8, replaced.fetch('edges_count')
+      assert_equal 9, replaced.fetch('materials_count')
+      assert_equal 'kept-hash', replaced.fetch('content_hash')
+    end
+  end
+
+  def test_v4_touch_last_used_keeps_legacy_nil_return_value
+    with_library_root do |root|
+      write_asset(root)
+      storage = Storage.new(root)
+
+      assert_nil storage.touch_last_used!(ASSET_ID)
+      refute_nil storage.item_by_id(ASSET_ID).fetch('last_used_at')
+    end
+  end
+
   def test_v4_category_rename_updates_only_manifests_and_empty_category_can_be_deleted
     with_library_root do |root|
       write_asset(root)

@@ -255,7 +255,8 @@ module Drale
       def touch_last_used!(item_id)
         if @format == :v4
           now = FS.now_iso8601
-          return v4_update_manifest_item!(item_id, now) { |item| item['last_used_at'] = now }
+          v4_update_manifest_item!(item_id, now) { |item| item['last_used_at'] = now }
+          return nil
         end
         item = require_item!(item_id)
         now = FS.now_iso8601
@@ -513,12 +514,17 @@ module Drale
         saved = Compat.save_definition_to_file(definition, staged, purpose: :library_replace, library_path: @lib_root)
         raise 'Не удалось сохранить временный файл замены.' unless saved && File.file?(staged)
 
-        normalized_meta = normalize_item_metadata_hash(metadata)
-        normalized_meta['file_size_bytes'] ||= normalize_integer(File.size(staged))
-        normalized_meta['bbox_xyz'] ||= normalize_bbox([definition.bounds.width.to_f, definition.bounds.depth.to_f, definition.bounds.height.to_f]) if definition.respond_to?(:bounds)
-        manifest = v4_manifest_from_item(item.merge(normalized_meta).merge(
+        supplied_metadata = metadata.is_a?(Hash) ? metadata : {}
+        normalized_meta = normalize_item_metadata_hash(supplied_metadata)
+        merged_item = item.dup
+        normalized_meta.each do |key, value|
+          merged_item[key] = value if supplied_metadata.key?(key)
+        end
+        merged_item['file_size_bytes'] ||= normalize_integer(File.size(staged))
+        merged_item['bbox_xyz'] ||= normalize_bbox([definition.bounds.width.to_f, definition.bounds.depth.to_f, definition.bounds.height.to_f]) if definition.respond_to?(:bounds)
+        manifest = v4_manifest_from_item(merged_item.merge(
           'source' => source.to_s.empty? ? item['source'] : source.to_s,
-          'content_hash' => normalize_hash(content_hash), 'updated_at' => FS.now_iso8601
+          'content_hash' => content_hash.nil? ? item['content_hash'] : normalize_hash(content_hash), 'updated_at' => FS.now_iso8601
         ))
         payloads = {
           'model.skp' => File.binread(staged),
