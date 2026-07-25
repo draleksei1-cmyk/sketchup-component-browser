@@ -17,13 +17,16 @@ class StorageV4Test < Minitest::Test
     FileUtils.mkdir_p(asset_dir)
     File.write(File.join(asset_dir, 'model.skp'), 'skp') unless manifest.delete(:without_model)
 
+    without_asset_version = manifest.delete(:without_asset_version)
     payload = canonical_manifest(id).merge(manifest)
+    payload.delete('asset_version') if without_asset_version
     File.write(File.join(asset_dir, 'asset.json'), JSON.pretty_generate(payload)) unless manifest.delete(:unreadable)
     asset_dir
   end
 
   def canonical_manifest(id, name: 'Door', category: 'Doors')
     {
+      'asset_version' => 1,
       'id' => id,
       'name' => name,
       'category' => category,
@@ -125,6 +128,31 @@ class StorageV4Test < Minitest::Test
     end
   end
 
+  def test_catalog_rebuild_uses_its_own_unique_temp_and_leaves_no_temp_files
+    with_library_root do |root|
+      write_asset(root)
+      catalog_path = File.join(root, 'library.json')
+      unrelated_tmp = "#{catalog_path}.tmp"
+      File.write(unrelated_tmp, 'unrelated')
+
+      Storage.new(root)
+
+      assert_equal 'unrelated', File.file?(unrelated_tmp) ? File.read(unrelated_tmp) : nil
+      assert_empty Dir.glob(File.join(root, 'library.json.*.tmp'))
+      assert_equal ASSET_ID, read_catalog(root).fetch('assets').first.fetch('id')
+    end
+  end
+
+  def test_catalog_rebuild_propagates_atomic_replace_failure
+    with_library_root do |root|
+      write_asset(root)
+      FileUtils.mkdir_p(File.join(root, 'library.json'))
+
+      assert_raises(SystemCallError) { Storage.new(root) }
+      assert_empty Dir.glob(File.join(root, 'library.json.*.tmp'))
+    end
+  end
+
   def test_invalid_or_unreadable_assets_are_recoverable_and_not_deleted
     with_library_root do |root|
       invalid_dir = write_asset(root, id: SECOND_ASSET_ID, directory_id: ASSET_ID)
@@ -174,6 +202,43 @@ class StorageV4Test < Minitest::Test
       assert_equal 'Windows', item.fetch('category')
       assert_equal ['door'], item.fetch('tags')
       assert_equal 'Canonical description', item.fetch('description')
+    end
+  end
+
+  def test_v4_rejects_assets_without_integer_asset_version_one
+    [
+      { without_asset_version: true },
+      { 'asset_version' => nil },
+      { 'asset_version' => '1' },
+      { 'asset_version' => 2 }
+    ].each do |version_override|
+      with_library_root do |root|
+        write_asset(root, manifest: version_override)
+
+        storage = Storage.new(root)
+        recovery = Array(storage.index['recovery']).first || {}
+
+        assert_nil storage.item_by_id(ASSET_ID)
+        assert_match(/asset_version/, recovery['reason'].to_s)
+      end
+    end
+  end
+
+  def test_v4_rejects_noncanonical_or_reversed_manifest_timestamps
+    [
+      { 'created_at' => '2026-07-25T12:00:00+00:00' },
+      { 'updated_at' => 'not-a-timestamp' },
+      { 'created_at' => '2026-07-25T13:00:00Z', 'updated_at' => '2026-07-25T12:00:00Z' }
+    ].each do |timestamps|
+      with_library_root do |root|
+        write_asset(root, manifest: timestamps)
+
+        storage = Storage.new(root)
+        recovery = Array(storage.index['recovery']).first || {}
+
+        assert_nil storage.item_by_id(ASSET_ID)
+        assert_match(/timestamp/, recovery['reason'].to_s)
+      end
     end
   end
 

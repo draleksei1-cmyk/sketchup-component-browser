@@ -168,11 +168,17 @@ module Drale
       end
 
       def path_within_root?(lib_root, path)
-        root = File.expand_path(lib_root.to_s)
-        candidate = File.expand_path(path.to_s)
+        root = resolve_from_existing_ancestor(lib_root)
+        candidate = resolve_from_existing_ancestor(path)
+        if Gem.win_platform?
+          root = root.downcase
+          candidate = candidate.downcase
+        end
         return true if candidate == root
 
         candidate.start_with?(root.end_with?(File::SEPARATOR) ? root : "#{root}#{File::SEPARATOR}")
+      rescue StandardError
+        false
       end
 
       def extract_short_id(filename)
@@ -243,6 +249,21 @@ module Drale
       end
 
       private
+
+      def resolve_from_existing_ancestor(path)
+        candidate = File.expand_path(path.to_s)
+        unresolved_segments = []
+
+        until File.exist?(candidate) || File.symlink?(candidate)
+          parent = File.dirname(candidate)
+          raise ArgumentError, 'Path has no resolvable ancestor.' if parent == candidate
+
+          unresolved_segments.unshift(File.basename(candidate))
+          candidate = parent
+        end
+
+        File.expand_path(File.join(File.realpath(candidate), *unresolved_segments))
+      end
 
       def asset_rel_path(asset_id, filename)
         [ASSETS_DIR, asset_id.to_s, filename].join('/')

@@ -1,6 +1,7 @@
 require 'json'
 require 'fileutils'
 require 'securerandom'
+require 'tempfile'
 require 'time'
 
 require_relative 'fs'
@@ -489,12 +490,17 @@ module Drale
       def normalize_v4_asset(directory_id, manifest, asset_dir)
         return [nil, 'asset directory is not a UUID'] unless directory_id.match?(UUID_PATTERN)
         return [nil, 'manifest id does not match asset directory'] unless manifest['id'].to_s == directory_id
+        return [nil, 'asset_version must be integer 1'] unless manifest['asset_version'].is_a?(Integer) && manifest['asset_version'] == 1
         return [nil, 'model.skp is missing'] unless File.file?(File.join(asset_dir, 'model.skp'))
 
-        metadata_path = File.join(asset_dir, 'asset.json')
-        fallback_time = File.mtime(metadata_path).utc.iso8601
-        created_at = normalize_timestamp(manifest['created_at'], fallback_time)
-        updated_at = normalize_timestamp(manifest['updated_at'], created_at)
+        created_at = manifest['created_at']
+        updated_at = manifest['updated_at']
+        unless valid_timestamp?(created_at) && valid_timestamp?(updated_at)
+          return [nil, 'manifest timestamp must be canonical UTC ISO-8601']
+        end
+        if Time.iso8601(updated_at) < Time.iso8601(created_at)
+          return [nil, 'manifest timestamp updated_at precedes created_at']
+        end
 
         [{
           'id' => directory_id,
@@ -655,12 +661,20 @@ module Drale
       end
 
       def atomic_write_json(path, data)
-        tmp_path = "#{path}.tmp"
-        json = JSON.pretty_generate(data)
-        File.write(tmp_path, json, mode: 'w:UTF-8')
-        FileUtils.mv(tmp_path, path, force: true)
+        directory = File.dirname(path)
+        basename = File.basename(path)
+        tmp_file = Tempfile.new(["#{basename}.", '.tmp'], directory, encoding: 'UTF-8')
+        tmp_path = tmp_file.path
+
+        tmp_file.write(JSON.pretty_generate(data))
+        tmp_file.flush
+        tmp_file.fsync
+        tmp_file.close
+        File.rename(tmp_path, path)
+        tmp_path = nil
       ensure
-        File.delete(tmp_path) if defined?(tmp_path) && File.file?(tmp_path)
+        tmp_file.close if defined?(tmp_file) && tmp_file && !tmp_file.closed?
+        File.delete(tmp_path) if defined?(tmp_path) && tmp_path && File.file?(tmp_path)
       end
 
       def require_item!(item_id)
@@ -761,14 +775,6 @@ module Drale
 
       def ensure_legacy_mutation!
         raise ArgumentError, 'v4 libraries are read-only.' if @format == :v4
-      end
-
-      def normalize_timestamp(value, fallback)
-        return fallback if value.to_s.strip.empty?
-
-        Time.parse(value.to_s).utc.iso8601
-      rescue StandardError
-        fallback
       end
 
       def valid_timestamp?(value)

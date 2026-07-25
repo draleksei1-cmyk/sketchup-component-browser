@@ -80,6 +80,36 @@ class FSTest < Minitest::Test
     end
   end
 
+  def test_to_full_path_rejects_an_existing_link_that_resolves_outside_root
+    Dir.mktmpdir('component-library-parent') do |parent|
+      root = File.join(parent, 'library')
+      outside = File.join(parent, 'outside')
+      FileUtils.mkdir_p([root, outside])
+      link = File.join(root, 'linked-assets')
+      link_created = false
+
+      begin
+        File.symlink(outside, link)
+        link_created = true
+      rescue NotImplementedError, Errno::EACCES, Errno::EPERM
+        junction_command = %(cmd /d /c mklink /J "#{link}" "#{outside}")
+        link_created = system(junction_command, out: File::NULL, err: File::NULL) if Gem.win_platform?
+      end
+      skip 'This environment cannot create directory links.' unless link_created
+
+      assert_raises(ArgumentError) { FS.to_full_path(root, 'linked-assets/new/model.skp') }
+      refute FS.path_within_root?(root, File.join(link, 'new', 'model.skp'))
+      assert_equal File.join(root, 'new-assets', 'model.skp'),
+                   FS.to_full_path(root, 'new-assets/model.skp')
+    ensure
+      if defined?(link) && File.symlink?(link)
+        File.delete(link)
+      elsif defined?(link) && File.directory?(link)
+        Dir.rmdir(link)
+      end
+    end
+  end
+
   def test_v3_fixture_contains_a_current_schema_door_item
     fixture_path = File.join(__dir__, 'fixtures', 'library_v3', 'library_index.json')
     index = JSON.parse(File.read(fixture_path))
