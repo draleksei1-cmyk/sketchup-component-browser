@@ -3,6 +3,7 @@ require 'fileutils'
 require 'securerandom'
 require 'tempfile'
 require 'time'
+require 'digest'
 
 require_relative 'fs'
 require_relative 'compat'
@@ -21,6 +22,8 @@ module Drale
         raise ArgumentError, 'Library path is empty.' if lib_root.to_s.strip.empty?
 
         @lib_root = File.expand_path(lib_root)
+        @recovery_status = { 'transactions' => [] }
+        recover_pending_transactions!
         @format = detect_format
         FS.ensure_library_structure(@lib_root) unless @format == :v4
         @index = load_or_initialize_index
@@ -28,6 +31,39 @@ module Drale
 
       def index
         deep_copy(@index)
+      end
+
+      def recovery_status
+        deep_copy(@recovery_status)
+      end
+
+      # Protocol seam for v4 writers. Task 4 will call this instead of making
+      # payload, manifest, and catalog changes independently.
+      def replace_v4_asset_payloads!(item_id, payloads)
+        raise ArgumentError, 'v4 payload replacement requires a v4 library.' unless @format == :v4
+        payloads = payloads.is_a?(Hash) ? payloads : {}
+        required = %w[model.skp preview.png asset.json]
+        raise ArgumentError, 'Replacement payload is incomplete.' unless required.all? { |name| payloads.key?(name) }
+
+        with_transaction!(operation: 'replace', item_id: item_id) do |transaction|
+          backup_transaction_payloads!(transaction)
+          stage_transaction_payloads!(transaction, payloads)
+          commit_transaction_payloads!(transaction)
+          commit_transaction_manifest!(transaction)
+          assets, = load_v4_assets
+          commit_transaction_catalog!(transaction, v4_catalog_for_assets(assets, read_v4_catalog))
+        end
+        reload_index!
+      end
+
+      def with_transaction!(operation:, item_id:)
+        transaction = prepare_transaction!(operation: operation, item_id: item_id)
+        yield transaction
+        cleanup_committed_transaction!(transaction) if transaction['state'] == 'catalog_committed'
+        true
+      rescue StandardError
+        recover_transaction_file!(transaction['journal_path']) if defined?(transaction) && transaction
+        raise
       end
 
       def reload_index!
@@ -380,6 +416,220 @@ module Drale
 
       private
 
+      def prepare_transaction!(operation:, item_id:)
+        txid = SecureRandom.uuid
+        tx_root = File.join(FS.transactions_root(@lib_root), txid)
+        before_root = File.join(tx_root, 'before')
+        snapshot_path = File.join(FS.snapshots_root(@lib_root), "#{txid}-library.json")
+        asset_root = FS.asset_dir(@lib_root, item_id)
+        FileUtils.mkdir_p(before_root)
+        FileUtils.mkdir_p(File.dirname(snapshot_path))
+
+        catalog_path = FS.catalog_path(@lib_root)
+        catalog_existed = File.file?(catalog_path)
+        catalog_bytes = catalog_existed ? File.binread(catalog_path) : nil
+        atomic_write_bytes(snapshot_path, catalog_bytes || ''.b)
+        payloads = %w[model.skp preview.png asset.json].map do |name|
+          path = File.join(asset_root, name)
+          existed = File.file?(path)
+          {
+            'name' => name,
+            'path' => path,
+            'before_path' => File.join(before_root, name),
+            'staged_path' => "#{path}.new-#{txid}",
+            'existed' => existed,
+            'sha256' => existed ? sha256_file(path) : nil
+          }
+        end
+        manifest = payloads.find { |payload| payload['name'] == 'asset.json' }
+        now = FS.now_iso8601
+        transaction = {
+          'version' => 1,
+          'id' => txid,
+          'state' => 'prepared',
+          'operation' => operation.to_s,
+          'item_id' => item_id.to_s,
+          'created_at' => now,
+          'updated_at' => now,
+          'journal_path' => File.join(FS.transactions_root(@lib_root), "#{txid}.json"),
+          'transaction_root' => tx_root,
+          'manifest_snapshot' => {
+            'path' => manifest['path'],
+            'bytes' => manifest['existed'] ? File.binread(manifest['path']) : nil,
+            'sha256' => manifest['sha256']
+          },
+          'payloads' => payloads,
+          'catalog_snapshot' => {
+            'path' => snapshot_path,
+            'existed' => catalog_existed,
+            'sha256' => catalog_existed ? Digest::SHA256.hexdigest(catalog_bytes) : nil
+          }
+        }
+        persist_transaction!(transaction)
+        transaction
+      end
+
+      def backup_transaction_payloads!(transaction)
+        transaction.fetch('payloads').each do |payload|
+          next unless payload['existed']
+
+          FileUtils.mkdir_p(File.dirname(payload['before_path']))
+          File.rename(payload['path'], payload['before_path'])
+        end
+        transition_transaction!(transaction, 'payload_backed_up')
+      end
+
+      def stage_transaction_payloads!(transaction, payloads)
+        transaction.fetch('payloads').each do |payload|
+          bytes = payloads.fetch(payload['name'])
+          atomic_write_bytes(payload['staged_path'], bytes)
+          raise "Staged payload missing: #{payload['name']}" unless File.file?(payload['staged_path'])
+
+          payload['staged_sha256'] = sha256_file(payload['staged_path'])
+          expected = Digest::SHA256.hexdigest(bytes.to_s.b)
+          raise "Staged payload hash mismatch: #{payload['name']}" unless payload['staged_sha256'] == expected
+          persist_transaction!(transaction)
+          test_failure_after!('model_staged') if payload['name'] == 'model.skp'
+        end
+        transition_transaction!(transaction, 'payload_staged')
+      end
+
+      def commit_transaction_payloads!(transaction)
+        transaction.fetch('payloads').reject { |payload| payload['name'] == 'asset.json' }.each do |payload|
+          File.rename(payload['staged_path'], payload['path'])
+        end
+        transition_transaction!(transaction, 'payload_committed')
+      end
+
+      def commit_transaction_manifest!(transaction)
+        manifest = transaction.fetch('payloads').find { |payload| payload['name'] == 'asset.json' }
+        File.rename(manifest['staged_path'], manifest['path'])
+        transition_transaction!(transaction, 'manifest_committed')
+      end
+
+      def commit_transaction_catalog!(transaction, catalog)
+        atomic_write_json(FS.catalog_path(@lib_root), catalog)
+        transition_transaction!(transaction, 'catalog_committed')
+      end
+
+      def v4_catalog_for_assets(assets, existing_catalog)
+        now = FS.now_iso8601
+        created_at = catalog_created_at(existing_catalog)
+        created_at = now if Time.iso8601(created_at) > Time.iso8601(now)
+        { 'version' => FORMAT_V4, 'created_at' => created_at, 'updated_at' => now, 'assets' => v4_catalog_assets(assets) }
+      end
+
+      def transition_transaction!(transaction, state)
+        transaction['state'] = state
+        transaction['updated_at'] = FS.now_iso8601
+        persist_transaction!(transaction)
+      end
+
+      def persist_transaction!(transaction)
+        atomic_write_json(transaction.fetch('journal_path'), transaction.reject { |key, _| key == 'journal_path' || key == 'transaction_root' })
+      end
+
+      def recover_pending_transactions!
+        root = FS.transactions_root(@lib_root)
+        return unless File.directory?(root)
+
+        Dir.glob(File.join(root, '*.json')).sort.each { |journal| recover_transaction_file!(journal) }
+        prune_transaction_snapshots!
+      end
+
+      def recover_transaction_file!(journal_path)
+        transaction = JSON.parse(File.read(journal_path, encoding: 'UTF-8'))
+        transaction['journal_path'] = journal_path
+        transaction['transaction_root'] = File.join(FS.transactions_root(@lib_root), transaction.fetch('id'))
+        if transaction['state'] == 'catalog_committed'
+          cleanup_committed_transaction!(transaction)
+          return true
+        end
+
+        verify_recovery_evidence!(transaction)
+        transaction.fetch('payloads').each do |payload|
+          if payload['existed']
+            File.rename(payload.fetch('before_path'), payload.fetch('path'))
+          elsif File.file?(payload['path'])
+            File.delete(payload['path'])
+          end
+        end
+        restore_catalog_snapshot!(transaction.fetch('catalog_snapshot'))
+        cleanup_committed_transaction!(transaction)
+        true
+      rescue StandardError => error
+        @recovery_status ||= { 'transactions' => [] }
+        @recovery_status['transactions'] << {
+          'journal_path' => journal_path,
+          'status' => 'recoverable',
+          'reason' => "#{error.class}: #{error.message}"
+        }
+        false
+      end
+
+      def verify_recovery_evidence!(transaction)
+        transaction.fetch('payloads').each do |payload|
+          next unless payload['existed']
+
+          before_path = payload.fetch('before_path')
+          raise "Backup missing: #{before_path}" unless File.file?(before_path)
+          raise "Backup SHA256 mismatch: #{before_path}" unless sha256_file(before_path) == payload.fetch('sha256')
+        end
+        snapshot = transaction.fetch('catalog_snapshot')
+        return unless snapshot['existed']
+
+        raise "Catalog snapshot missing: #{snapshot['path']}" unless File.file?(snapshot['path'])
+        raise "Catalog snapshot SHA256 mismatch: #{snapshot['path']}" unless sha256_file(snapshot['path']) == snapshot['sha256']
+      end
+
+      def restore_catalog_snapshot!(snapshot)
+        if snapshot['existed']
+          atomic_write_bytes(FS.catalog_path(@lib_root), File.binread(snapshot.fetch('path')))
+        elsif File.file?(FS.catalog_path(@lib_root))
+          File.delete(FS.catalog_path(@lib_root))
+        end
+      end
+
+      def cleanup_committed_transaction!(transaction)
+        FileUtils.rm_rf(transaction['transaction_root']) if transaction['transaction_root'] && File.directory?(transaction['transaction_root'])
+        File.delete(transaction['journal_path']) if transaction['journal_path'] && File.file?(transaction['journal_path'])
+        prune_transaction_snapshots!
+      end
+
+      def prune_transaction_snapshots!
+        root = FS.snapshots_root(@lib_root)
+        return unless File.directory?(root)
+
+        pending = Dir.glob(File.join(FS.transactions_root(@lib_root), '*.json')).filter_map do |journal|
+          JSON.parse(File.read(journal, encoding: 'UTF-8')).dig('catalog_snapshot', 'path')
+        rescue StandardError
+          nil
+        end
+        snapshots = Dir.glob(File.join(root, '*.json')).reject { |path| pending.include?(path) }.sort_by { |path| File.mtime(path) }.reverse
+        snapshots.drop(20).each { |path| File.delete(path) }
+      end
+
+      def sha256_file(path)
+        Digest::SHA256.file(path).hexdigest
+      end
+
+      def atomic_write_bytes(path, bytes)
+        directory = File.dirname(path)
+        FileUtils.mkdir_p(directory)
+        tmp = "#{path}.#{SecureRandom.hex(8)}.tmp"
+        File.binwrite(tmp, bytes)
+        File.open(tmp, 'rb+') { |file| file.fsync }
+        File.rename(tmp, path)
+      ensure
+        File.delete(tmp) if defined?(tmp) && tmp && File.file?(tmp)
+      end
+
+      def test_failure_after!(point)
+        return unless ENV['CLB_TEST_MODE'] == '1' && ENV['CLB_TEST_FAILURE_AFTER'] == point
+
+        raise "Test transaction failure after #{point}"
+      end
+
       def load_or_initialize_index
         return load_v4_index if @format == :v4
 
@@ -442,7 +692,9 @@ module Drale
       def load_v4_index
         assets, recovery = load_v4_assets
         catalog = read_v4_catalog
-        catalog = rebuild_catalog_from_assets!(assets, catalog) unless catalog_matches_assets?(catalog, assets)
+        unless catalog_matches_assets?(catalog, assets) || Array(@recovery_status && @recovery_status['transactions']).any?
+          catalog = rebuild_catalog_from_assets!(assets, catalog)
+        end
 
         {
           'version' => FORMAT_V4,
@@ -450,7 +702,7 @@ module Drale
           'updated_at' => FS.now_iso8601,
           'categories' => assets.map { |asset| asset['category'] }.uniq.sort,
           'items' => assets,
-          'recovery' => recovery
+          'recovery' => recovery + Array(@recovery_status && @recovery_status['transactions'])
         }
       end
 

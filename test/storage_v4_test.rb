@@ -1,6 +1,7 @@
 require_relative 'test_helper'
 require_relative '../component_library_browser/storage'
 require 'json'
+require 'digest'
 
 Storage = Drale::ComponentLibraryBrowser::Storage
 
@@ -41,6 +42,62 @@ class StorageV4Test < Minitest::Test
 
   def read_catalog(root)
     JSON.parse(File.read(File.join(root, 'library.json')))
+  end
+
+  def v4_payload_paths(root, id = ASSET_ID)
+    asset_dir = File.join(root, 'assets', id)
+    {
+      'model.skp' => File.join(asset_dir, 'model.skp'),
+      'preview.png' => File.join(asset_dir, 'preview.png'),
+      'asset.json' => File.join(asset_dir, 'asset.json')
+    }
+  end
+
+  def write_v4_preview(root, bytes = 'preview')
+    File.binwrite(v4_payload_paths(root).fetch('preview.png'), bytes)
+  end
+
+  def write_pending_transaction(root, phase:, operation:, original:, current:, corrupt_backup: false)
+    txid = 'transaction-test-0001'
+    tx_root = File.join(root, '.clb', 'transactions', txid)
+    before_root = File.join(tx_root, 'before')
+    snapshot_path = File.join(root, '.clb', 'snapshots', "#{txid}-library.json")
+    FileUtils.mkdir_p(before_root)
+    FileUtils.mkdir_p(File.dirname(snapshot_path))
+    File.binwrite(snapshot_path, original.fetch('catalog'))
+
+    payloads = original.fetch('payloads').map do |name, bytes|
+      before_path = File.join(before_root, name)
+      File.binwrite(before_path, corrupt_backup && name == 'model.skp' ? 'corrupt-backup' : bytes)
+      {
+        'name' => name,
+        'path' => v4_payload_paths(root).fetch(name),
+        'before_path' => before_path,
+        'existed' => true,
+        'sha256' => Digest::SHA256.hexdigest(bytes)
+      }
+    end
+
+    current.fetch('payloads').each { |name, bytes| File.binwrite(v4_payload_paths(root).fetch(name), bytes) }
+    File.binwrite(File.join(root, 'library.json'), current.fetch('catalog'))
+    journal = {
+      'version' => 1,
+      'id' => txid,
+      'state' => phase,
+      'operation' => operation,
+      'item_id' => ASSET_ID,
+      'created_at' => '2026-07-25T12:00:00Z',
+      'updated_at' => '2026-07-25T12:00:00Z',
+      'manifest_snapshot' => { 'path' => v4_payload_paths(root).fetch('asset.json'), 'bytes' => original.fetch('payloads').fetch('asset.json'), 'sha256' => Digest::SHA256.hexdigest(original.fetch('payloads').fetch('asset.json')) },
+      'payloads' => payloads,
+      'catalog_snapshot' => {
+        'path' => snapshot_path,
+        'existed' => true,
+        'sha256' => Digest::SHA256.hexdigest(original.fetch('catalog'))
+      }
+    }
+    File.write("#{tx_root}.json", JSON.pretty_generate(journal))
+    "#{tx_root}.json"
   end
 
   def test_catalog_is_built_from_a_canonical_asset_when_missing
@@ -284,6 +341,30 @@ class StorageV4Test < Minitest::Test
     end
   end
 
+  def test_checkpoint_a_v4_rebuilds_from_asset_manifest_without_changing_v3_fixture_bytes
+    with_library_root do |root|
+      write_asset(root, manifest: { 'name' => 'Manifest authority' })
+
+      item = Storage.new(root).item_by_id(ASSET_ID)
+
+      assert_equal 'Manifest authority', item.fetch('name')
+    end
+
+    fixture = File.expand_path('fixtures/library_v3', __dir__)
+    fixture_bytes = Dir.glob(File.join(fixture, '**', '*')).select { |path| File.file?(path) }
+                       .to_h { |path| [path.delete_prefix("#{fixture}#{File::SEPARATOR}"), File.binread(path)] }
+    with_library_root do |root|
+      FileUtils.cp_r(Dir.glob(File.join(fixture, '*')), root)
+
+      Storage.new(root)
+
+      actual_bytes = Dir.glob(File.join(root, '**', '*')).select { |path| File.file?(path) }
+                        .to_h { |path| [path.delete_prefix("#{root}#{File::SEPARATOR}"), File.binread(path)] }
+      assert_equal fixture_bytes, actual_bytes
+      refute File.exist?(File.join(root, 'library.json'))
+    end
+  end
+
   def test_accidental_empty_assets_directory_does_not_hide_a_v3_library
     fixture = File.expand_path('fixtures/library_v3', __dir__)
     with_library_root do |root|
@@ -354,6 +435,126 @@ class StorageV4Test < Minitest::Test
 
       assert_equal 'Door', item && item['name']
       assert_equal catalog_before, File.read(catalog_path)
+    end
+  end
+
+  def test_replace_failure_after_model_staged_restores_previous_payload_and_metadata
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+      assert_respond_to storage, :replace_v4_asset_payloads!
+      original = v4_payload_paths(root).transform_values { |path| File.binread(path) }
+
+      ENV['CLB_TEST_FAILURE_AFTER'] = 'model_staged'
+      assert_raises(RuntimeError) do
+        storage.replace_v4_asset_payloads!(ASSET_ID, {
+          'model.skp' => 'new-model',
+          'preview.png' => 'new-preview',
+          'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'New door'))
+        })
+      end
+
+      assert_equal original, v4_payload_paths(root).transform_values { |path| File.binread(path) }
+      assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*.json'))
+    ensure
+      ENV.delete('CLB_TEST_FAILURE_AFTER')
+    end
+  end
+
+  def test_startup_recovers_delete_journal_after_payload_quarantined
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      Storage.new(root)
+      paths = v4_payload_paths(root)
+      original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      original.fetch('payloads').each_key { |name| File.delete(paths.fetch(name)) }
+      journal_path = write_pending_transaction(root, phase: 'payload_quarantined', operation: 'delete', original: original,
+                                                current: { 'payloads' => {}, 'catalog' => original.fetch('catalog') })
+
+      recovered = Storage.new(root)
+
+      assert File.file?(paths.fetch('model.skp'))
+      assert_equal 'skp', File.binread(paths.fetch('model.skp'))
+      assert_equal ASSET_ID, recovered.item_by_id(ASSET_ID).fetch('id')
+      refute File.exist?(journal_path)
+    end
+  end
+
+  def test_startup_recovers_replace_after_payload_committed_before_catalog
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      Storage.new(root)
+      paths = v4_payload_paths(root)
+      original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      write_pending_transaction(root, phase: 'payload_committed', operation: 'replace', original: original,
+                                current: { 'payloads' => { 'model.skp' => 'new-model', 'preview.png' => 'new-preview', 'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'Changed')) }, 'catalog' => original.fetch('catalog') })
+
+      Storage.new(root)
+
+      assert_equal original.fetch('payloads'), paths.transform_values { |path| File.binread(path) }
+    end
+  end
+
+  def test_startup_recovers_replace_after_manifest_committed_before_catalog
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      Storage.new(root)
+      paths = v4_payload_paths(root)
+      original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      changed_manifest = JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'Changed'))
+      write_pending_transaction(root, phase: 'manifest_committed', operation: 'replace', original: original,
+                                current: { 'payloads' => { 'model.skp' => 'new-model', 'preview.png' => 'new-preview', 'asset.json' => changed_manifest }, 'catalog' => '{"version":4,"assets":[]}' })
+
+      Storage.new(root)
+
+      assert_equal original.fetch('payloads').fetch('model.skp'), File.binread(paths.fetch('model.skp'))
+      assert_equal original.fetch('payloads').fetch('asset.json'), File.binread(paths.fetch('asset.json'))
+      assert_equal original.fetch('catalog'), File.binread(File.join(root, 'library.json'))
+    end
+  end
+
+  def test_startup_stops_recovery_without_mutating_when_backup_hash_mismatches
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      Storage.new(root)
+      paths = v4_payload_paths(root)
+      original = { 'payloads' => paths.transform_values { |path| File.binread(path) }, 'catalog' => File.binread(File.join(root, 'library.json')) }
+      journal_path = write_pending_transaction(root, phase: 'payload_committed', operation: 'replace', original: original,
+                                                current: { 'payloads' => { 'model.skp' => 'new-model', 'preview.png' => 'new-preview', 'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'Changed')) }, 'catalog' => '{"version":4,"assets":[]}' }, corrupt_backup: true)
+      current_model = File.binread(paths.fetch('model.skp'))
+      current_catalog = File.binread(File.join(root, 'library.json'))
+
+      recovered = Storage.new(root)
+
+      assert_equal current_model, File.binread(paths.fetch('model.skp'))
+      assert_equal current_catalog, File.binread(File.join(root, 'library.json'))
+      assert File.exist?(journal_path)
+      assert_includes recovered.recovery_status.fetch('transactions').first.fetch('reason'), 'SHA256'
+    end
+  end
+
+  def test_successful_transaction_cleans_journal_and_before_backup_after_catalog_commit
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+      assert_respond_to storage, :replace_v4_asset_payloads!
+
+      storage.replace_v4_asset_payloads!(ASSET_ID, {
+        'model.skp' => 'new-model',
+        'preview.png' => 'new-preview',
+        'asset.json' => JSON.generate(canonical_manifest(ASSET_ID).merge('name' => 'New door'))
+      })
+
+      assert_equal 'new-model', File.binread(v4_payload_paths(root).fetch('model.skp'))
+      assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*.json'))
+      assert_empty Dir.glob(File.join(root, '.clb', 'transactions', '*', 'before'))
+      assert_operator Dir.glob(File.join(root, '.clb', 'snapshots', '*.json')).length, :<=, 20
     end
   end
 end
