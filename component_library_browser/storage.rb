@@ -421,7 +421,7 @@ module Drale
         return false unless File.file?(path)
 
         catalog = JSON.parse(File.read(path, encoding: 'UTF-8'))
-        catalog_matches_assets?(catalog, [])
+        catalog.is_a?(Hash) && catalog['version'] == FORMAT_V4
       rescue StandardError
         false
       end

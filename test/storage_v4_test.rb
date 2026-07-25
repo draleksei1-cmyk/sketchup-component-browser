@@ -244,4 +244,21 @@ class StorageV4Test < Minitest::Test
       refute File.exist?(File.join(root, 'library.json'))
     end
   end
+
+  def test_parseable_v4_catalog_activates_v4_without_a_v3_index_even_when_stale
+    with_library_root do |root|
+      File.write(File.join(root, 'library.json'), JSON.pretty_generate(
+        'version' => 4,
+        'created_at' => 'not-a-timestamp',
+        'updated_at' => 'not-a-timestamp',
+        'assets' => [{ 'id' => ASSET_ID, 'asset_rel_path' => "assets/#{ASSET_ID}", 'updated_at' => 'not-a-timestamp' }]
+      ))
+
+      storage = Storage.new(root)
+
+      assert_equal Storage::FORMAT_V4, storage.index.fetch('version')
+      assert_equal [], read_catalog(root).fetch('assets')
+      refute File.exist?(File.join(root, 'library_index.json'))
+    end
+  end
 end
