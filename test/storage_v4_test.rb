@@ -276,4 +276,19 @@ class StorageV4Test < Minitest::Test
       refute File.exist?(File.join(root, 'library_index.json'))
     end
   end
+
+  def test_incomplete_v4_catalog_does_not_override_or_rewrite_a_v3_library
+    fixture = File.expand_path('fixtures/library_v3', __dir__)
+    with_library_root do |root|
+      FileUtils.cp_r(Dir.glob(File.join(fixture, '*')), root)
+      catalog_path = File.join(root, 'library.json')
+      catalog_before = '{"version":4}'
+      File.write(catalog_path, catalog_before)
+
+      item = Storage.new(root).item_by_id(ASSET_ID)
+
+      assert_equal 'Door', item && item['name']
+      assert_equal catalog_before, File.read(catalog_path)
+    end
+  end
 end

@@ -394,10 +394,14 @@ module Drale
       end
 
       def detect_format
-        return :v4 if valid_v4_catalog_activation?
+        has_v3_index = File.file?(FS.index_path(@lib_root))
+        if has_v3_index
+          return :v4 if complete_v4_catalog_activation? || v4_asset_tree?
 
-        return :v4 if v4_asset_tree?
-        return :v3 if File.file?(FS.index_path(@lib_root))
+          return :v3
+        end
+
+        return :v4 if declared_v4_catalog?
         return :v4 if File.directory?(FS.assets_root(@lib_root))
 
         :empty
@@ -418,7 +422,7 @@ module Drale
         end
       end
 
-      def valid_v4_catalog_activation?
+      def declared_v4_catalog?
         path = FS.catalog_path(@lib_root)
         return false unless File.file?(path)
 
@@ -426,6 +430,12 @@ module Drale
         catalog.is_a?(Hash) && catalog['version'] == FORMAT_V4
       rescue StandardError
         false
+      end
+
+      def complete_v4_catalog_activation?
+        catalog = read_v4_catalog
+        assets, = load_v4_assets
+        catalog_matches_assets?(catalog, assets)
       end
 
       def load_v4_index
