@@ -55,7 +55,8 @@ module Drale
           commit_transaction_payloads!(transaction)
           commit_transaction_manifest!(transaction)
           assets, = load_v4_assets
-          commit_transaction_catalog!(transaction, v4_catalog_for_assets(assets, read_v4_catalog))
+          current_catalog = read_v4_catalog
+          commit_transaction_catalog!(transaction, v4_catalog_for_assets(assets, current_catalog, extra_categories: v4_extra_categories(current_catalog)))
         end
         reload_index!
       end
@@ -88,6 +89,7 @@ module Drale
       end
 
       def add_category!(name)
+        return v4_add_category!(name) if @format == :v4
         ensure_legacy_mutation!
         category = FS.normalize_category_name(name)
         return false if @index['categories'].any? { |c| FS.same_name?(c, category) }
@@ -100,6 +102,7 @@ module Drale
       end
 
       def rename_category!(old_name, new_name)
+        return v4_rename_category!(old_name, new_name) if @format == :v4
         ensure_legacy_mutation!
         old_name = old_name.to_s
         new_name = FS.normalize_category_name(new_name)
@@ -135,6 +138,7 @@ module Drale
       end
 
       def delete_category!(name)
+        return v4_delete_category!(name) if @format == :v4
         ensure_legacy_mutation!
         name = name.to_s
         raise ArgumentError, 'Category not found.' unless category_exists?(name)
@@ -151,6 +155,7 @@ module Drale
       end
 
       def toggle_favorite!(item_id, value)
+        return v4_update_manifest_item!(item_id) { |item| item['favorite'] = !!value } if @format == :v4
         item = require_item!(item_id)
         item['favorite'] = !!value
         item['updated_at'] = FS.now_iso8601
@@ -159,6 +164,16 @@ module Drale
       end
 
       def update_item_metadata!(item_id, attrs = {})
+        if @format == :v4
+          attrs = {} unless attrs.is_a?(Hash)
+          return v4_update_manifest_item!(item_id) do |item|
+            item['file_size_bytes'] = normalize_integer(attrs['file_size_bytes'])
+            item['bbox_xyz'] = normalize_bbox(attrs['bbox_xyz'])
+            item['faces_count'] = normalize_integer(attrs['faces_count'])
+            item['edges_count'] = normalize_integer(attrs['edges_count'])
+            item['materials_count'] = normalize_integer(attrs['materials_count'])
+          end
+        end
         item = require_item!(item_id)
         attrs = {} unless attrs.is_a?(Hash)
 
@@ -173,6 +188,7 @@ module Drale
       end
 
       def set_content_hash!(item_id, hash_value)
+        return v4_update_manifest_item!(item_id) { |item| item['content_hash'] = normalize_hash(hash_value) } if @format == :v4
         item = require_item!(item_id)
         item['content_hash'] = normalize_hash(hash_value)
         item['updated_at'] = FS.now_iso8601
@@ -182,6 +198,7 @@ module Drale
 
       def replace_item_definition!(item_id, definition, source:, metadata: nil, content_hash: nil)
         raise ArgumentError, 'Definition is required.' unless definition
+        return v4_replace_item_definition!(item_id, definition, source: source, metadata: metadata, content_hash: content_hash) if @format == :v4
 
         item = require_item!(item_id)
         item_snapshot = deep_copy(item)
@@ -236,6 +253,10 @@ module Drale
       end
 
       def touch_last_used!(item_id)
+        if @format == :v4
+          now = FS.now_iso8601
+          return v4_update_manifest_item!(item_id, now) { |item| item['last_used_at'] = now }
+        end
         item = require_item!(item_id)
         now = FS.now_iso8601
         item['last_used_at'] = now
@@ -244,6 +265,7 @@ module Drale
       end
 
       def delete_item!(item_id)
+        return v4_delete_item!(item_id) if @format == :v4
         item = require_item!(item_id)
 
         [item['skp_rel_path'], item['thumb_rel_path']].each do |rel|
@@ -257,6 +279,7 @@ module Drale
       end
 
       def save_definition!(definition, source:, category:, display_name:, tags:, metadata: nil, content_hash: nil, description: nil)
+        return v4_save_definition!(definition, source: source, category: category, display_name: display_name, tags: tags, metadata: metadata, content_hash: content_hash, description: description) if @format == :v4
         ensure_legacy_mutation!
         category = ensure_category!(category)
         requested_name = FS.normalize_display_name(display_name)
@@ -315,6 +338,7 @@ module Drale
       end
 
       def edit_item!(item_id, attrs)
+        return v4_edit_item!(item_id, attrs) if @format == :v4
         item = require_item!(item_id)
         requested_name = FS.normalize_display_name(attrs['name'] || item['name'])
         requested_category = ensure_category!(attrs['category'] || item['category'])
@@ -347,6 +371,7 @@ module Drale
       end
 
       def scan_library!
+        return v4_scan_library! if @format == :v4
         ensure_legacy_mutation!
         categories_root = FS.categories_root(@lib_root)
         previews_root = FS.previews_root(@lib_root)
@@ -419,6 +444,204 @@ module Drale
       end
 
       private
+
+      # V4 keeps each asset self-contained.  The catalog is only a directory of
+      # asset folders plus explicitly-created empty categories; it never owns
+      # item metadata or file paths.
+      def v4_save_definition!(definition, source:, category:, display_name:, tags:, metadata:, content_hash:, description:)
+        raise ArgumentError, 'Definition is required.' unless definition
+
+        category = FS.normalize_category_name(category)
+        requested_name = FS.normalize_display_name(display_name)
+        taken = @index['items'].select { |entry| FS.same_name?(entry['category'], category) }.map { |entry| entry['name'] }
+        final_name = FS.next_unique_name(requested_name, taken)
+        item_id = SecureRandom.uuid
+        asset_dir = FS.asset_dir(@lib_root, item_id)
+        FileUtils.mkdir_p(asset_dir)
+        model_path = File.join(asset_dir, 'model.skp')
+        saved = Compat.save_definition_to_file(definition, model_path, purpose: :library_save, library_path: @lib_root)
+        raise 'Не удалось сохранить компонент в библиотеку.' unless saved && File.file?(model_path)
+
+        preview_path = File.join(asset_dir, 'preview.png')
+        begin
+          definition.save_thumbnail(preview_path) if definition.respond_to?(:save_thumbnail)
+          FS.compact_png_thumbnail(preview_path, 256) if File.file?(preview_path)
+        rescue StandardError
+          File.delete(preview_path) if File.file?(preview_path)
+        end
+
+        now = FS.now_iso8601
+        normalized_meta = normalize_item_metadata_hash(metadata)
+        normalized_meta['file_size_bytes'] ||= normalize_integer(File.size(model_path))
+        normalized_meta['bbox_xyz'] ||= normalize_bbox([definition.bounds.width.to_f, definition.bounds.depth.to_f, definition.bounds.height.to_f]) if definition.respond_to?(:bounds)
+        manifest = v4_manifest_from_item({
+          'id' => item_id, 'name' => final_name, 'category' => category, 'description' => normalize_description(description),
+          'tags' => FS.normalize_tags(tags), 'favorite' => false, 'created_at' => now, 'updated_at' => now,
+          'last_used_at' => nil, 'source' => source.to_s, 'content_hash' => normalize_hash(content_hash)
+        }.merge(normalized_meta))
+        atomic_write_json(File.join(asset_dir, 'asset.json'), manifest)
+        reload_index!
+        persist_v4_catalog!
+        item = item_by_id(item_id)
+        { 'item' => item, 'name_changed' => !FS.same_name?(requested_name, final_name), 'requested_name' => requested_name, 'final_name' => final_name }
+      rescue StandardError
+        FileUtils.rm_rf(asset_dir) if defined?(asset_dir) && asset_dir && File.directory?(asset_dir)
+        raise
+      end
+
+      def v4_edit_item!(item_id, attrs)
+        attrs = {} unless attrs.is_a?(Hash)
+        item = v4_item!(item_id)
+        requested_name = FS.normalize_display_name(attrs['name'] || item['name'])
+        category = FS.normalize_category_name(attrs['category'] || item['category'])
+        taken = @index['items'].reject { |entry| entry['id'] == item['id'] }
+                               .select { |entry| FS.same_name?(entry['category'], category) }.map { |entry| entry['name'] }
+        final_name = FS.next_unique_name(requested_name, taken)
+        updated = v4_update_manifest_item!(item_id) do |manifest|
+          manifest['name'] = final_name
+          manifest['category'] = category
+          manifest['description'] = normalize_description(attrs.key?('description') ? attrs['description'] : item['description'])
+          manifest['tags'] = FS.normalize_tags(attrs.key?('tags') ? attrs['tags'] : item['tags'])
+        end
+        { 'item' => updated, 'name_changed' => !FS.same_name?(requested_name, final_name), 'requested_name' => requested_name, 'final_name' => final_name }
+      end
+
+      def v4_replace_item_definition!(item_id, definition, source:, metadata:, content_hash:)
+        item = v4_item!(item_id)
+        asset_dir = FS.asset_dir(@lib_root, item['id'])
+        staged = File.join(asset_dir, ".model-#{SecureRandom.uuid}.tmp")
+        saved = Compat.save_definition_to_file(definition, staged, purpose: :library_replace, library_path: @lib_root)
+        raise 'Не удалось сохранить временный файл замены.' unless saved && File.file?(staged)
+
+        normalized_meta = normalize_item_metadata_hash(metadata)
+        normalized_meta['file_size_bytes'] ||= normalize_integer(File.size(staged))
+        normalized_meta['bbox_xyz'] ||= normalize_bbox([definition.bounds.width.to_f, definition.bounds.depth.to_f, definition.bounds.height.to_f]) if definition.respond_to?(:bounds)
+        manifest = v4_manifest_from_item(item.merge(normalized_meta).merge(
+          'source' => source.to_s.empty? ? item['source'] : source.to_s,
+          'content_hash' => normalize_hash(content_hash), 'updated_at' => FS.now_iso8601
+        ))
+        payloads = {
+          'model.skp' => File.binread(staged),
+          'preview.png' => File.file?(File.join(asset_dir, 'preview.png')) ? File.binread(File.join(asset_dir, 'preview.png')) : ''.b,
+          'asset.json' => JSON.pretty_generate(manifest)
+        }
+        replace_v4_asset_payloads!(item_id, payloads)
+        item_by_id(item_id)
+      ensure
+        File.delete(staged) if defined?(staged) && staged && File.file?(staged)
+      end
+
+      def v4_update_manifest_item!(item_id, now = FS.now_iso8601)
+        item = v4_item!(item_id)
+        manifest_path = File.join(FS.asset_dir(@lib_root, item['id']), 'asset.json')
+        before = File.binread(manifest_path)
+        manifest = v4_manifest_from_item(item)
+        yield manifest
+        manifest['updated_at'] = now
+        atomic_write_json(manifest_path, manifest)
+        begin
+          reload_index!
+          persist_v4_catalog!
+        rescue StandardError
+          atomic_write_bytes(manifest_path, before)
+          reload_index!
+          raise
+        end
+        item_by_id(item_id)
+      end
+
+      def v4_delete_item!(item_id)
+        item = v4_item!(item_id)
+        source = FS.asset_dir(@lib_root, item['id'])
+        txid = SecureRandom.uuid
+        destination = FS.trash_path(@lib_root, txid, item['id'])
+        FileUtils.mkdir_p(File.dirname(destination))
+        File.rename(source, destination)
+        begin
+          reload_index!
+          persist_v4_catalog!
+        rescue StandardError
+          FileUtils.mkdir_p(File.dirname(source))
+          File.rename(destination, source) if File.directory?(destination)
+          reload_index!
+          raise
+        end
+        true
+      end
+
+      def v4_add_category!(name)
+        category = FS.normalize_category_name(name)
+        return false if @index['categories'].any? { |entry| FS.same_name?(entry, category) }
+
+        persist_v4_catalog!(extra_categories: v4_extra_categories + [category])
+        reload_index!
+        true
+      end
+
+      def v4_rename_category!(old_name, new_name)
+        old_name = old_name.to_s
+        new_name = FS.normalize_category_name(new_name)
+        raise ArgumentError, 'Category not found.' unless category_exists?(old_name)
+        raise ArgumentError, 'Category already exists.' if category_exists?(new_name)
+
+        @index['items'].select { |item| FS.same_name?(item['category'], old_name) }.each do |item|
+          v4_update_manifest_item!(item['id']) { |manifest| manifest['category'] = new_name }
+        end
+        extras = v4_extra_categories.map { |category| FS.same_name?(category, old_name) ? new_name : category }
+        persist_v4_catalog!(extra_categories: extras)
+        reload_index!
+        true
+      end
+
+      def v4_delete_category!(name)
+        name = name.to_s
+        raise ArgumentError, 'Category not found.' unless category_exists?(name)
+        raise ArgumentError, 'Category is not empty.' if @index['items'].any? { |item| FS.same_name?(item['category'], name) }
+
+        persist_v4_catalog!(extra_categories: v4_extra_categories.reject { |category| FS.same_name?(category, name) })
+        reload_index!
+        true
+      end
+
+      def v4_scan_library!
+        assets, = load_v4_assets
+        persist_v4_catalog!(assets: assets)
+        reload_index!
+        assets.length
+      end
+
+      def v4_item!(item_id)
+        item = item_by_id(item_id)
+        raise ArgumentError, 'Item not found.' unless item
+
+        item
+      end
+
+      def v4_manifest_from_item(item)
+        {
+          'asset_version' => 1, 'id' => item['id'], 'name' => FS.normalize_display_name(item['name']),
+          'category' => FS.normalize_category_name(item['category']), 'description' => normalize_description(item['description']),
+          'tags' => FS.normalize_tags(item['tags']), 'favorite' => !!item['favorite'], 'created_at' => item['created_at'],
+          'updated_at' => item['updated_at'], 'last_used_at' => item['last_used_at'],
+          'source' => item['source'].to_s.empty? ? 'component' : item['source'].to_s,
+          'file_size_bytes' => normalize_integer(item['file_size_bytes']), 'bbox_xyz' => normalize_bbox(item['bbox_xyz']),
+          'faces_count' => normalize_integer(item['faces_count']), 'edges_count' => normalize_integer(item['edges_count']),
+          'materials_count' => normalize_integer(item['materials_count']), 'content_hash' => normalize_hash(item['content_hash'])
+        }
+      end
+
+      def v4_extra_categories(catalog = read_v4_catalog)
+        Array(catalog && catalog['categories']).map { |entry| FS.normalize_category_name(entry) }.uniq.sort
+      rescue ArgumentError
+        []
+      end
+
+      def persist_v4_catalog!(assets: nil, extra_categories: nil)
+        assets ||= load_v4_assets.first
+        catalog = read_v4_catalog
+        extra_categories = v4_extra_categories(catalog) if extra_categories.nil?
+        atomic_write_json(FS.catalog_path(@lib_root), v4_catalog_for_assets(assets, catalog, extra_categories: extra_categories))
+      end
 
       def prepare_transaction!(operation:, item_id:)
         raise ArgumentError, 'Invalid transaction operation.' unless TRANSACTION_OPERATIONS.include?(operation.to_s)
@@ -511,11 +734,14 @@ module Drale
         transition_transaction!(transaction, 'catalog_committed')
       end
 
-      def v4_catalog_for_assets(assets, existing_catalog)
+      def v4_catalog_for_assets(assets, existing_catalog, extra_categories: nil)
         now = FS.now_iso8601
         created_at = catalog_created_at(existing_catalog)
         created_at = now if Time.iso8601(created_at) > Time.iso8601(now)
-        { 'version' => FORMAT_V4, 'created_at' => created_at, 'updated_at' => now, 'assets' => v4_catalog_assets(assets) }
+        catalog = { 'version' => FORMAT_V4, 'created_at' => created_at, 'updated_at' => now, 'assets' => v4_catalog_assets(assets) }
+        categories = Array(extra_categories).map { |entry| FS.normalize_category_name(entry) }.uniq.sort
+        catalog['categories'] = categories unless categories.empty?
+        catalog
       end
 
       def transition_transaction!(transaction, state)
@@ -747,7 +973,7 @@ module Drale
         return :v4 if declared_v4_catalog?
         return :v4 if File.directory?(FS.assets_root(@lib_root))
 
-        :empty
+        :v4
       end
 
       def v4_asset_tree?
@@ -793,7 +1019,7 @@ module Drale
           'version' => FORMAT_V4,
           'created_at' => catalog_created_at(catalog),
           'updated_at' => FS.now_iso8601,
-          'categories' => assets.map { |asset| asset['category'] }.uniq.sort,
+          'categories' => (assets.map { |asset| asset['category'] } + v4_extra_categories(catalog)).uniq.sort,
           'items' => assets,
           'recovery' => recovery + unresolved_recovery
         }
@@ -883,24 +1109,22 @@ module Drale
 
       def catalog_matches_assets?(catalog, assets)
         return false unless catalog.is_a?(Hash)
-        return false unless catalog.keys.sort == %w[assets created_at updated_at version]
+        return false unless (catalog.keys.sort == %w[assets created_at updated_at version] || catalog.keys.sort == %w[assets categories created_at updated_at version])
         return false unless catalog['version'] == FORMAT_V4
         return false unless valid_timestamp?(catalog['created_at']) && valid_timestamp?(catalog['updated_at'])
         return false unless Time.iso8601(catalog['created_at']) <= Time.iso8601(catalog['updated_at'])
 
-        catalog['assets'] == v4_catalog_assets(assets)
+        return false unless catalog['assets'] == v4_catalog_assets(assets)
+        return true unless catalog.key?('categories')
+
+        catalog['categories'].is_a?(Array) && catalog['categories'] == v4_extra_categories(catalog)
       end
 
       def rebuild_catalog_from_assets!(assets, existing_catalog = nil)
         now = FS.now_iso8601
         created_at = catalog_created_at(existing_catalog)
         created_at = now if Time.iso8601(created_at) > Time.iso8601(now)
-        catalog = {
-          'version' => FORMAT_V4,
-          'created_at' => created_at,
-          'updated_at' => now,
-          'assets' => v4_catalog_assets(assets)
-        }
+        catalog = v4_catalog_for_assets(assets, existing_catalog, extra_categories: v4_extra_categories(existing_catalog))
         atomic_write_json(FS.catalog_path(@lib_root), catalog)
         catalog
       end

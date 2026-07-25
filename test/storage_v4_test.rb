@@ -313,32 +313,24 @@ class StorageV4Test < Minitest::Test
     end
   end
 
-  def test_v4_adapter_rejects_mutations_without_changing_assets_catalog_or_categories
+  def test_v4_category_is_catalog_only
     with_library_root do |root|
       write_asset(root)
       storage = Storage.new(root)
-      asset_dir = File.join(root, 'assets', ASSET_ID)
-      catalog_before = File.binread(File.join(root, 'library.json'))
-      manifest_before = File.binread(File.join(asset_dir, 'asset.json'))
-      model_before = File.binread(File.join(asset_dir, 'model.skp'))
-
-      assert_raises(ArgumentError) { storage.toggle_favorite!(ASSET_ID, true) }
-      assert_raises(ArgumentError) { storage.add_category!('Mutated category') }
-      assert_equal catalog_before, File.binread(File.join(root, 'library.json'))
-      assert_equal manifest_before, File.binread(File.join(asset_dir, 'asset.json'))
-      assert_equal model_before, File.binread(File.join(asset_dir, 'model.skp'))
-      refute File.exist?(File.join(root, 'library_index.json'))
-      refute Dir.exist?(File.join(root, 'categories', 'Mutated category'))
+      assert storage.add_category!('Empty category')
+      assert_includes storage.index.fetch('categories'), 'Empty category'
+      assert_includes read_catalog(root).fetch('categories'), 'Empty category'
+      refute Dir.exist?(File.join(root, 'categories'))
     end
   end
 
-  def test_empty_root_keeps_the_legacy_v3_index_contract
+  def test_empty_root_starts_a_v4_library
     with_library_root do |root|
       storage = Storage.new(root)
 
-      assert_equal Storage::FORMAT_V3, storage.index.fetch('version')
-      assert File.file?(File.join(root, 'library_index.json'))
-      refute File.exist?(File.join(root, 'library.json'))
+      assert_equal Storage::FORMAT_V4, storage.index.fetch('version')
+      assert File.file?(File.join(root, 'library.json'))
+      refute File.exist?(File.join(root, 'library_index.json'))
     end
   end
 
@@ -705,6 +697,141 @@ class StorageV4Test < Minitest::Test
       elsif defined?(link) && File.directory?(link)
         Dir.rmdir(link)
       end
+    end
+  end
+
+  FakeBounds = Struct.new(:width, :depth, :height)
+  class FakeDefinition
+    attr_reader :bounds
+
+    def initialize(model = 'saved-model', preview = 'saved-preview')
+      @model = model
+      @preview = preview
+      @bounds = FakeBounds.new(1, 2, 3)
+    end
+
+    def save_copy(path)
+      File.binwrite(path, @model)
+      true
+    end
+
+    def save_thumbnail(path)
+      File.binwrite(path, @preview)
+      true
+    end
+  end
+
+  def test_save_definition_writes_a_self_contained_v4_asset_and_catalog
+    with_library_root do |root|
+      storage = Storage.new(root)
+
+      result = storage.save_definition!(FakeDefinition.new, source: 'component', category: 'Doors', display_name: 'Door', tags: ['Door'], description: 'A door')
+      item = result.fetch('item')
+      asset_dir = File.join(root, 'assets', item.fetch('id'))
+
+      assert File.file?(File.join(asset_dir, 'model.skp'))
+      assert File.file?(File.join(asset_dir, 'asset.json'))
+      assert File.file?(File.join(asset_dir, 'preview.png'))
+      assert_equal "assets/#{item.fetch('id')}", read_catalog(root).fetch('assets').first.fetch('asset_rel_path')
+      refute Dir.exist?(File.join(root, 'categories'))
+    end
+  end
+
+  def test_v4_metadata_edits_keep_payload_bytes_and_asset_paths_stable
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+      paths = v4_payload_paths(root)
+      original = paths.transform_values { |path| File.binread(path) }
+
+      storage.edit_item!(ASSET_ID, 'name' => 'Renamed', 'category' => 'Windows', 'tags' => ['window'], 'description' => 'Updated')
+      item = storage.item_by_id(ASSET_ID)
+
+      assert_equal original.slice('model.skp', 'preview.png'), paths.slice('model.skp', 'preview.png').transform_values { |path| File.binread(path) }
+      assert_equal "assets/#{ASSET_ID}/model.skp", item.fetch('skp_rel_path')
+      assert_equal "assets/#{ASSET_ID}/preview.png", item.fetch('thumb_rel_path')
+      assert_equal 'Windows', item.fetch('category')
+    end
+  end
+
+  def test_v4_manifest_mutations_are_transactional_and_scan_preserves_user_metadata
+    with_library_root do |root|
+      write_asset(root)
+      storage = Storage.new(root)
+
+      storage.toggle_favorite!(ASSET_ID, true)
+      storage.update_item_metadata!(ASSET_ID, 'faces_count' => 9)
+      storage.set_content_hash!(ASSET_ID, 'abc')
+      storage.touch_last_used!(ASSET_ID)
+      count = storage.scan_library!
+      item = storage.item_by_id(ASSET_ID)
+
+      assert_equal 1, count
+      assert item.fetch('favorite')
+      assert_equal 9, item.fetch('faces_count')
+      assert_equal 'abc', item.fetch('content_hash')
+      refute_nil item.fetch('last_used_at')
+    end
+  end
+
+  def test_v4_delete_quarantines_entire_asset_payload_in_trash
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+
+      assert storage.delete_item!(ASSET_ID)
+      assert_nil storage.item_by_id(ASSET_ID)
+      trashed = Dir.glob(File.join(root, '.clb', 'trash', '*', ASSET_ID))
+      assert_equal 1, trashed.length
+      assert File.file?(File.join(trashed.first, 'model.skp'))
+      assert File.file?(File.join(trashed.first, 'asset.json'))
+      assert File.file?(File.join(trashed.first, 'preview.png'))
+    end
+  end
+
+  def test_v4_replace_commits_model_then_metadata_and_rolls_back_on_failure
+    with_library_root do |root|
+      write_asset(root, manifest: { 'favorite' => true, 'description' => 'Keep me', 'content_hash' => 'old-hash' })
+      storage = Storage.new(root)
+      before = v4_payload_paths(root).transform_values { |path| File.file?(path) ? File.binread(path) : nil }
+
+      ENV['CLB_TEST_FAILURE_AFTER'] = 'model_staged'
+      assert_raises(RuntimeError) { storage.replace_item_definition!(ASSET_ID, FakeDefinition.new('new-model'), source: 'component', metadata: { 'faces_count' => 12 }, content_hash: 'new-hash') }
+      assert_equal before, v4_payload_paths(root).transform_values { |path| File.file?(path) ? File.binread(path) : nil }
+
+      ENV.delete('CLB_TEST_FAILURE_AFTER')
+      replaced = storage.replace_item_definition!(ASSET_ID, FakeDefinition.new('new-model'), source: 'component', metadata: { 'faces_count' => 12 }, content_hash: 'new-hash')
+      assert_equal ASSET_ID, replaced.fetch('id')
+      assert replaced.fetch('favorite')
+      assert_equal 'Keep me', replaced.fetch('description')
+      assert_equal 'new-model', File.binread(v4_payload_paths(root).fetch('model.skp'))
+      assert_equal 'new-hash', replaced.fetch('content_hash')
+      assert_equal 12, replaced.fetch('faces_count')
+      assert_equal File.size(v4_payload_paths(root).fetch('model.skp')), replaced.fetch('file_size_bytes')
+    ensure
+      ENV.delete('CLB_TEST_FAILURE_AFTER')
+    end
+  end
+
+  def test_v4_category_rename_updates_only_manifests_and_empty_category_can_be_deleted
+    with_library_root do |root|
+      write_asset(root)
+      write_v4_preview(root)
+      storage = Storage.new(root)
+      model = File.binread(v4_payload_paths(root).fetch('model.skp'))
+      preview = File.binread(v4_payload_paths(root).fetch('preview.png'))
+
+      assert storage.rename_category!('Doors', 'Windows')
+      assert_equal 'Windows', storage.item_by_id(ASSET_ID).fetch('category')
+      assert_equal model, File.binread(v4_payload_paths(root).fetch('model.skp'))
+      assert_equal preview, File.binread(v4_payload_paths(root).fetch('preview.png'))
+      assert_raises(ArgumentError) { storage.delete_category!('Windows') }
+      assert storage.add_category!('Empty')
+      assert storage.delete_category!('Empty')
+      refute_includes storage.index.fetch('categories'), 'Empty'
+      refute Dir.exist?(File.join(root, 'categories'))
     end
   end
 end
