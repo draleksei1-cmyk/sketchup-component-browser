@@ -9,7 +9,10 @@ require_relative 'compat'
 module Drale
   module ComponentLibraryBrowser
     class Storage
-      INDEX_VERSION = 3
+      FORMAT_V3 = 3
+      FORMAT_V4 = 4
+      INDEX_VERSION = FORMAT_V3
+      UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i.freeze
 
       attr_reader :lib_root
 
@@ -17,7 +20,8 @@ module Drale
         raise ArgumentError, 'Library path is empty.' if lib_root.to_s.strip.empty?
 
         @lib_root = File.expand_path(lib_root)
-        FS.ensure_library_structure(@lib_root)
+        @format = detect_format
+        FS.ensure_library_structure(@lib_root) unless @format == :v4
         @index = load_or_initialize_index
       end
 
@@ -43,6 +47,7 @@ module Drale
       end
 
       def add_category!(name)
+        ensure_legacy_mutation!
         category = FS.normalize_category_name(name)
         return false if @index['categories'].any? { |c| FS.same_name?(c, category) }
 
@@ -54,6 +59,7 @@ module Drale
       end
 
       def rename_category!(old_name, new_name)
+        ensure_legacy_mutation!
         old_name = old_name.to_s
         new_name = FS.normalize_category_name(new_name)
         raise ArgumentError, 'Category not found.' unless category_exists?(old_name)
@@ -88,6 +94,7 @@ module Drale
       end
 
       def delete_category!(name)
+        ensure_legacy_mutation!
         name = name.to_s
         raise ArgumentError, 'Category not found.' unless category_exists?(name)
 
@@ -209,6 +216,7 @@ module Drale
       end
 
       def save_definition!(definition, source:, category:, display_name:, tags:, metadata: nil, content_hash: nil, description: nil)
+        ensure_legacy_mutation!
         category = ensure_category!(category)
         requested_name = FS.normalize_display_name(display_name)
         taken_names = @index['items'].select { |item| FS.same_name?(item['category'], category) }.map { |item| item['name'] }
@@ -298,6 +306,7 @@ module Drale
       end
 
       def scan_library!
+        ensure_legacy_mutation!
         categories_root = FS.categories_root(@lib_root)
         previews_root = FS.previews_root(@lib_root)
         FileUtils.mkdir_p(categories_root)
@@ -371,6 +380,8 @@ module Drale
       private
 
       def load_or_initialize_index
+        return load_v4_index if @format == :v4
+
         path = FS.index_path(@lib_root)
         return initialize_new_index(path) unless File.file?(path)
 
@@ -380,6 +391,146 @@ module Drale
         rescue StandardError
           initialize_new_index(path)
         end
+      end
+
+      def detect_format
+        return :v4 if File.directory?(FS.assets_root(@lib_root))
+        return :v3 if File.file?(FS.index_path(@lib_root))
+
+        :empty
+      end
+
+      def load_v4_index
+        assets, recovery = load_v4_assets
+        catalog = read_v4_catalog
+        catalog = rebuild_catalog_from_assets!(assets, catalog) unless catalog_matches_assets?(catalog, assets)
+
+        {
+          'version' => FORMAT_V4,
+          'created_at' => catalog_created_at(catalog),
+          'updated_at' => FS.now_iso8601,
+          'categories' => assets.map { |asset| asset['category'] }.uniq.sort,
+          'items' => assets,
+          'recovery' => recovery
+        }
+      end
+
+      def load_v4_assets
+        assets = []
+        recovery = []
+        root = FS.assets_root(@lib_root)
+        return [assets, recovery] unless File.directory?(root)
+
+        Dir.glob(File.join(root, '*')).sort.each do |asset_dir|
+          next unless File.directory?(asset_dir)
+
+          directory_id = File.basename(asset_dir)
+          begin
+            manifest = read_asset_manifest(asset_dir)
+            asset, reason = normalize_v4_asset(directory_id, manifest, asset_dir)
+            if asset
+              assets << asset
+            else
+              recovery << v4_recovery_entry(directory_id, reason)
+            end
+          rescue StandardError => error
+            recovery << v4_recovery_entry(directory_id, "unreadable manifest: #{error.class}")
+          end
+        end
+
+        [assets.sort_by { |asset| asset['id'] }, recovery.sort_by { |entry| entry['id'] }]
+      end
+
+      def read_asset_manifest(asset_dir)
+        parsed = JSON.parse(File.read(File.join(asset_dir, 'asset.json'), encoding: 'UTF-8'))
+        raise ArgumentError, 'asset.json must contain an object.' unless parsed.is_a?(Hash)
+
+        parsed
+      end
+
+      def normalize_v4_asset(directory_id, manifest, asset_dir)
+        return [nil, 'asset directory is not a UUID'] unless directory_id.match?(UUID_PATTERN)
+        return [nil, 'manifest id does not match asset directory'] unless manifest['id'].to_s == directory_id
+        return [nil, 'model.skp is missing'] unless File.file?(File.join(asset_dir, 'model.skp'))
+
+        metadata_path = File.join(asset_dir, 'asset.json')
+        fallback_time = File.mtime(metadata_path).utc.iso8601
+        created_at = normalize_timestamp(manifest['created_at'], fallback_time)
+        updated_at = normalize_timestamp(manifest['updated_at'], created_at)
+
+        [{
+          'id' => directory_id,
+          'name' => FS.normalize_display_name(manifest['name']),
+          'category' => FS.normalize_category_name(manifest['category']),
+          'description' => normalize_description(manifest['description']),
+          'tags' => FS.normalize_tags(manifest['tags']),
+          'favorite' => !!manifest['favorite'],
+          'created_at' => created_at,
+          'updated_at' => updated_at,
+          'last_used_at' => manifest['last_used_at'],
+          'skp_rel_path' => FS.asset_model_rel_path(directory_id),
+          'thumb_rel_path' => FS.asset_preview_rel_path(directory_id),
+          'source' => manifest['source'].to_s.empty? ? 'component' : manifest['source'].to_s,
+          'file_size_bytes' => normalize_integer(manifest['file_size_bytes']),
+          'bbox_xyz' => normalize_bbox(manifest['bbox_xyz']),
+          'faces_count' => normalize_integer(manifest['faces_count']),
+          'edges_count' => normalize_integer(manifest['edges_count']),
+          'materials_count' => normalize_integer(manifest['materials_count']),
+          'content_hash' => normalize_hash(manifest['content_hash'])
+        }, nil]
+      rescue ArgumentError => error
+        [nil, error.message]
+      end
+
+      def read_v4_catalog
+        path = FS.catalog_path(@lib_root)
+        return nil unless File.file?(path)
+
+        parsed = JSON.parse(File.read(path, encoding: 'UTF-8'))
+        parsed.is_a?(Hash) ? parsed : nil
+      rescue StandardError
+        nil
+      end
+
+      def catalog_matches_assets?(catalog, assets)
+        return false unless catalog.is_a?(Hash)
+        return false unless catalog.keys.sort == %w[assets created_at updated_at version]
+        return false unless catalog['version'].to_i == FORMAT_V4
+        return false unless valid_timestamp?(catalog['created_at']) && valid_timestamp?(catalog['updated_at'])
+
+        catalog['assets'] == v4_catalog_assets(assets)
+      end
+
+      def rebuild_catalog_from_assets!(assets, existing_catalog = nil)
+        now = FS.now_iso8601
+        catalog = {
+          'version' => FORMAT_V4,
+          'created_at' => catalog_created_at(existing_catalog),
+          'updated_at' => now,
+          'assets' => v4_catalog_assets(assets)
+        }
+        atomic_write_json(FS.catalog_path(@lib_root), catalog)
+        catalog
+      end
+
+      def v4_catalog_assets(assets)
+        assets.map do |asset|
+          {
+            'id' => asset['id'],
+            'asset_rel_path' => File.join(FS::ASSETS_DIR, asset['id']).tr('\\', '/'),
+            'updated_at' => asset['updated_at']
+          }
+        end.sort_by { |asset| asset['id'] }
+      end
+
+      def catalog_created_at(catalog)
+        return catalog['created_at'] if catalog.is_a?(Hash) && valid_timestamp?(catalog['created_at'])
+
+        FS.now_iso8601
+      end
+
+      def v4_recovery_entry(id, reason)
+        { 'id' => id.to_s, 'status' => 'invalid', 'reason' => reason.to_s }
       end
 
       def initialize_new_index(path)
@@ -472,6 +623,7 @@ module Drale
       end
 
       def require_item!(item_id)
+        ensure_legacy_mutation!
         item = item_by_id(item_id)
         raise ArgumentError, 'Item not found.' unless item
 
@@ -483,6 +635,7 @@ module Drale
       end
 
       def ensure_category!(name)
+        ensure_legacy_mutation!
         category = FS.normalize_category_name(name)
         add_category!(category) unless category_exists?(category)
         category
@@ -563,6 +716,24 @@ module Drale
         return nil if hash.empty?
 
         hash
+      end
+
+      def ensure_legacy_mutation!
+        raise ArgumentError, 'v4 libraries are read-only.' if @format == :v4
+      end
+
+      def normalize_timestamp(value, fallback)
+        return fallback if value.to_s.strip.empty?
+
+        Time.parse(value.to_s).utc.iso8601
+      rescue StandardError
+        fallback
+      end
+
+      def valid_timestamp?(value)
+        !value.to_s.strip.empty? && Time.parse(value.to_s)
+      rescue StandardError
+        false
       end
 
       def normalize_description(value)
