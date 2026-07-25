@@ -261,4 +261,19 @@ class StorageV4Test < Minitest::Test
       refute File.exist?(File.join(root, 'library_index.json'))
     end
   end
+
+  def test_invalid_assets_without_v3_activate_v4_recovery_and_rebuild_catalog
+    with_library_root do |root|
+      write_asset(root, id: SECOND_ASSET_ID, directory_id: ASSET_ID)
+      write_asset(root, id: SECOND_ASSET_ID, directory_id: SECOND_ASSET_ID, manifest: { unreadable: true })
+
+      storage = Storage.new(root)
+      catalog = File.file?(File.join(root, 'library.json')) ? read_catalog(root) : {}
+
+      assert_equal Storage::FORMAT_V4, storage.index['version']
+      assert_equal [ASSET_ID, SECOND_ASSET_ID], Array(storage.index['recovery']).map { |entry| entry['id'] }.sort
+      assert_equal [], catalog['assets']
+      refute File.exist?(File.join(root, 'library_index.json'))
+    end
+  end
 end

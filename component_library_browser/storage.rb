@@ -394,9 +394,11 @@ module Drale
       end
 
       def detect_format
+        return :v4 if valid_v4_catalog_activation?
+
         return :v4 if v4_asset_tree?
         return :v3 if File.file?(FS.index_path(@lib_root))
-        return :v4 if valid_v4_catalog_activation?
+        return :v4 if File.directory?(FS.assets_root(@lib_root))
 
         :empty
       end
