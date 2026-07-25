@@ -1,0 +1,27 @@
+{
+  "lib_root": "C:/Library",
+  "categories": ["Architecture", "Furniture", "Landscape", "Lighting"],
+  "pinned_categories": ["Architecture"],
+  "recent_limit": 50,
+  "insert_options": {"place_on_surface": true, "align_to_normal": false, "random_quadrant": false, "drop_to_ground": false, "random_step_degrees": 90},
+  "status_text": "Библиотека готова",
+  "array_pick_mode": false,
+  "array_pick_message": "",
+  "array_tool_active": false,
+  "selection_state": {"count": 0, "replace_library_from_selection_allowed": false},
+  "items": [
+    {"id":"arc-01","kind":"library","name":"Concrete wall","category":"Architecture","tags":["wall","concrete","exterior"],"thumb_url":"","favorite":true,"faces_count":2200},
+    {"id":"arc-02","kind":"library","name":"Glass door","category":"Architecture","tags":["door","glass"],"thumb_url":"","favorite":false,"faces_count":1300},
+    {"id":"arc-03","kind":"library","name":"Window 1200","category":"Architecture","tags":["window","frame"],"thumb_url":"","favorite":false,"faces_count":850},
+    {"id":"fur-01","kind":"library","name":"Oak chair","category":"Furniture","tags":["chair","oak"],"thumb_url":"","favorite":true,"faces_count":3200},
+    {"id":"fur-02","kind":"library","name":"Work desk","category":"Furniture","tags":["desk","office"],"thumb_url":"","favorite":false,"faces_count":4200},
+    {"id":"fur-03","kind":"library","name":"Sofa modular","category":"Furniture","tags":["sofa","living room"],"thumb_url":"","favorite":false,"faces_count":6800},
+    {"id":"lan-01","kind":"library","name":"Maple tree","category":"Landscape","tags":["tree","maple"],"thumb_url":"","favorite":false,"faces_count":280000},
+    {"id":"lan-02","kind":"library","name":"Stone planter","category":"Landscape","tags":["planter","stone"],"thumb_url":"","favorite":false,"faces_count":1600},
+    {"id":"lan-03","kind":"library","name":"Bench linear","category":"Landscape","tags":["bench","outdoor"],"thumb_url":"","favorite":false,"faces_count":2100},
+    {"id":"lit-01","kind":"library","name":"Pendant lamp","category":"Lighting","tags":["lamp","pendant"],"thumb_url":"","favorite":true,"faces_count":3400},
+    {"id":"lit-02","kind":"library","name":"Wall sconce","category":"Lighting","tags":["lamp","wall"],"thumb_url":"","favorite":false,"faces_count":1100},
+    {"id":"lit-03","kind":"library","name":"Track light","category":"Lighting","tags":["lamp","track"],"thumb_url":"","favorite":false,"faces_count":1900}
+  ],
+  "in_model_items": []
+}

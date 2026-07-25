@@ -1,0 +1,86 @@
+# frozen_string_literal: true
+
+require 'json'
+require 'minitest/autorun'
+
+class StaticUiContractTest < Minitest::Test
+  ROOT = File.expand_path('../..', __dir__)
+  UI = File.join(ROOT, 'component_library_browser', 'ui')
+
+  def html
+    @html ||= File.read(File.join(UI, 'index.html'), encoding: 'UTF-8')
+  end
+
+  def js
+    @js ||= File.read(File.join(UI, 'app.js'), encoding: 'UTF-8')
+  end
+
+  def css
+    @css ||= [File.read(File.join(UI, 'styles.css'), encoding: 'UTF-8'), File.read(File.join(UI, 'visibility.css'), encoding: 'UTF-8')].join
+  end
+
+  def test_realistic_fixture_has_at_least_twelve_library_items
+    fixture = JSON.parse(File.read(File.join(__dir__, 'fixtures', 'library-state.json'), encoding: 'UTF-8'))
+    assert_operator fixture.fetch('items').length, :>=, 12
+  end
+
+  def test_harness_stubs_sketchup_before_loading_production_app
+    script = File.read(File.join(__dir__, 'test_harness.js'), encoding: 'UTF-8')
+    assert_includes script, 'window.sketchup'
+    assert_includes script, 'fixtures/library-state.json'
+    assert_operator script.index('window.sketchup'), :<, script.index('app.src')
+  end
+
+  def test_library_shell_has_required_landmarks_and_safe_cards
+    %w[search cards-grid details-drawer primary-insert card-template library-overflow].each do |id|
+      assert_match(/id=["']#{Regexp.escape(id)}["']/, html, "missing ##{id}")
+    end
+    refute_match(/class=["'][^"']*card-(favorite|delete)/, html)
+  end
+
+  def test_icon_only_actions_are_not_unicode_glyph_buttons
+    html.scan(/<button\b[^>]*>(.*?)<\/button>/m).flatten.each do |contents|
+      text = contents.gsub(/<[^>]+>/, '').strip
+      refute_match(/\A[★✕✖✚✎⚙↻⋮‹›«»+\-]+\z/, text, "glyph-only action button: #{text.inspect}")
+    end
+  end
+
+  def test_production_app_exposes_test_bootstrap_guard_and_preserves_core_callbacks
+    assert_includes js, '__CLB_TEST_BOOTSTRAP__'
+    %w[ready refresh insert_item array_pick_from_library delete_item update_item_fields].each do |callback|
+      assert_match(/#{Regexp.escape(callback)}/, js, "missing callback #{callback}")
+    end
+  end
+
+  def test_canonical_svg_icons_and_toolbar_png_pairs_follow_the_icon_contract
+    icon_dir = File.join(ROOT, 'component_library_browser', 'icons')
+    required = %w[open save brick window settings reset array folder pipette check cancel refresh more star close]
+    required.each do |name|
+      path = File.join(icon_dir, "#{name}.svg")
+      assert File.file?(path), "missing canonical SVG #{name}.svg"
+      svg = File.read(path, encoding: 'UTF-8')
+      assert_match(/viewBox=["']0 0 24 24["']/, svg)
+      assert_match(/fill=["']none["']/, svg)
+      assert_match(/currentColor/, svg)
+      assert_match(/stroke-width=["']1\.75["']/, svg)
+      assert_match(/stroke-linecap=["']round["']/, svg)
+      assert_match(/stroke-linejoin=["']round["']/, svg)
+    end
+    main = File.read(File.join(ROOT, 'component_library_browser', 'main.rb'), encoding: 'UTF-8')
+    mappings = main.scan(/icon_prefix:\s*'([^']+)'/).flatten.uniq.sort
+    png_prefixes = Dir.glob(File.join(icon_dir, '*_{16,24}.png')).map { |path| File.basename(path).sub(/_(16|24)\.png\z/, '') }.uniq.sort
+    assert_equal mappings, png_prefixes, 'only mapped toolbar icons get raster pairs'
+    mappings.each do |name|
+      [16, 24].each do |size|
+        png = File.binread(File.join(icon_dir, "#{name}_#{size}.png"), 24)
+        assert_equal "\x89PNG\r\n\x1A\n".b, png[0, 8]
+        assert_equal size, png[16, 4].unpack1('N')
+        assert_equal size, png[20, 4].unpack1('N')
+      end
+    end
+  end
+
+  def test_hidden_dialogs_and_drawer_cannot_be_unhidden_by_layout_css
+    assert_includes css, '[hidden]{display:none!important}'
+  end
+end
