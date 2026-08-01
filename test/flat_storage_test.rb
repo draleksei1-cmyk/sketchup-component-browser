@@ -133,4 +133,39 @@ class FlatStorageTest < Minitest::Test
       assert_raises(ArgumentError) { storage.add_category!('Doors') }
     end
   end
+
+  def test_legacy_index_takes_priority_over_valid_flat_assets_without_writes
+    with_root do |root|
+      File.write(File.join(root, 'library_index.json'), '{"version":3,"items":[]}')
+      write_asset(root)
+      before = payloads(root)
+      storage = Storage.new(root)
+
+      assert_empty storage.index.fetch('items')
+      assert_equal before, payloads(root)
+      refute File.exist?(File.join(root, 'library.json'))
+      assert_raises(ArgumentError) { storage.delete_item!(ID) }
+    end
+  end
+
+  def test_startup_reverts_an_interrupted_flat_delete_from_its_contained_journal
+    with_root do |root|
+      write_asset(root)
+      storage = Storage.new(root)
+      original = payloads(root)
+      ENV['CLB_TEST_MODE'] = '1'
+      ENV['CLB_TEST_FAILURE_AFTER'] = 'delete_model_moved'
+
+      assert_raises(RuntimeError) { storage.delete_item!(ID) }
+      assert_equal 1, Dir.glob(File.join(root, 'trash', '*', 'delete.json')).length
+
+      recovered = Storage.new(root)
+      assert_equal original, payloads(root)
+      assert_equal ID, recovered.item_by_id(ID).fetch('id')
+      assert_empty Dir.glob(File.join(root, 'trash', '*', 'delete.json'))
+    ensure
+      ENV.delete('CLB_TEST_MODE')
+      ENV.delete('CLB_TEST_FAILURE_AFTER')
+    end
+  end
 end

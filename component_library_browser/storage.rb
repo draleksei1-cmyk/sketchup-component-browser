@@ -16,6 +16,7 @@ module Drale
       INDEX_VERSION = FORMAT_V3
       UUID_PATTERN = /\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i.freeze
       TRANSACTION_VERSION = 2
+      DELETE_JOURNAL_VERSION = 1
       TRANSACTION_OPERATIONS = %w[replace delete].freeze
       TRANSACTION_STATES = %w[prepared payload_backed_up payload_staged payload_committed manifest_committed catalog_committed payload_quarantined].freeze
       TRANSACTION_PAYLOADS = %w[model.skp preview.png asset.json].freeze
@@ -27,8 +28,11 @@ module Drale
 
         @lib_root = File.expand_path(lib_root)
         @recovery_status = { 'transactions' => [] }
-        recover_pending_transactions!
         @format = detect_format
+        if @format == :v4
+          recover_pending_transactions!
+          recover_pending_deletes!
+        end
         FS.ensure_library_structure(@lib_root) unless @format == :v4 || @format == :legacy_read_only
         @index = load_or_initialize_index
       end
@@ -560,24 +564,25 @@ module Drale
       def v4_delete_item!(item_id)
         item = v4_item!(item_id)
         txid = SecureRandom.uuid
-        moved = []
-        TRANSACTION_PAYLOADS.each do |name|
-          source = v4_payload_path(item['id'], name)
-          next unless File.file?(source)
+        journal = prepare_delete_journal!(txid, item['id'])
+        journal.fetch('payloads').each do |payload|
+          name = payload.fetch('name')
+          next unless payload['existed']
 
+          source = v4_payload_path(item['id'], name)
           destination = FS.trash_path(@lib_root, txid, File.basename(source))
           FileUtils.mkdir_p(File.dirname(destination))
           File.rename(source, destination)
-          moved << [source, destination]
+          journal['phase'] = "#{name.sub(/\..*\z/, '')}_moved"
+          persist_delete_journal!(journal)
+          test_failure_after!('delete_model_moved') if name == 'model.skp'
         end
-        begin
-          reload_index!
-          persist_v4_catalog!
-        rescue StandardError
-          moved.reverse_each { |source, destination| File.rename(destination, source) if File.file?(destination) }
-          reload_index!
-          raise
-        end
+        reload_index!
+        persist_v4_catalog!
+        journal['state'] = 'catalog_committed'
+        journal['phase'] = 'complete'
+        persist_delete_journal!(journal)
+        File.delete(delete_journal_path(txid))
         true
       end
 
@@ -774,6 +779,35 @@ module Drale
         Dir.glob(File.join(root, '*', 'transaction.json')).sort.each { |journal| recover_transaction_file!(journal, record_recovery: true) }
       end
 
+      def recover_pending_deletes!
+        root = FS.trash_root(@lib_root)
+        return unless File.directory?(root)
+
+        Dir.glob(File.join(root, '*', 'delete.json')).sort.each do |path|
+          journal = JSON.parse(File.read(path, encoding: 'UTF-8'))
+          validate_delete_journal!(journal, path)
+          if journal['state'] == 'prepared'
+            journal.fetch('payloads').each do |payload|
+              next unless payload['existed']
+
+              source = v4_payload_path(journal['item_id'], payload['name'])
+              destination = FS.trash_path(@lib_root, journal['id'], File.basename(source))
+              raise 'Delete recovery is ambiguous.' if File.file?(source) && File.file?(destination)
+              raise 'Deleted payload is missing.' unless File.file?(source) || File.file?(destination)
+
+              FileUtils.mkdir_p(File.dirname(source))
+              File.rename(destination, source) unless File.file?(source)
+            end
+          end
+          File.delete(path)
+          tx_root = FS.trash_path(@lib_root, journal['id'])
+          Dir.rmdir(tx_root) if Dir.exist?(tx_root) && Dir.empty?(tx_root)
+          @recovery_status['transactions'] << { 'id' => journal['id'], 'operation' => 'delete', 'phase' => journal['phase'] }
+        rescue StandardError => error
+          @recovery_status['transactions'] << { 'journal_path' => path, 'status' => 'recoverable', 'reason' => "#{error.class}: #{error.message}" }
+        end
+      end
+
       def recover_transaction_file!(journal_path, record_recovery: false)
         transaction = JSON.parse(File.read(journal_path, encoding: 'UTF-8'))
         transaction['journal_path'] = journal_path
@@ -887,6 +921,42 @@ module Drale
         FS.transaction_path(@lib_root, transaction.fetch('id'))
       end
 
+      def prepare_delete_journal!(txid, item_id)
+        payloads = TRANSACTION_PAYLOADS.map do |name|
+          { 'name' => name, 'existed' => File.file?(v4_payload_path(item_id, name)) }
+        end
+        journal = {
+          'version' => DELETE_JOURNAL_VERSION, 'id' => txid, 'state' => 'prepared', 'operation' => 'delete',
+          'item_id' => item_id, 'phase' => 'prepared', 'payloads' => payloads
+        }
+        FileUtils.mkdir_p(FS.trash_path(@lib_root, txid))
+        persist_delete_journal!(journal)
+        journal
+      end
+
+      def delete_journal_path(txid)
+        FS.trash_path(@lib_root, txid, 'delete.json')
+      end
+
+      def persist_delete_journal!(journal)
+        atomic_write_json(delete_journal_path(journal.fetch('id')), journal)
+      end
+
+      def validate_delete_journal!(journal, path)
+        raise ArgumentError, 'Invalid delete journal version.' unless journal['version'] == DELETE_JOURNAL_VERSION
+        raise ArgumentError, 'Invalid delete transaction id.' unless journal['id'].to_s.match?(UUID_PATTERN)
+        raise ArgumentError, 'Invalid delete item id.' unless journal['item_id'].to_s.match?(UUID_PATTERN)
+        raise ArgumentError, 'Invalid delete operation.' unless journal['operation'] == 'delete'
+        raise ArgumentError, 'Invalid delete state.' unless %w[prepared catalog_committed].include?(journal['state'])
+        raise ArgumentError, 'Invalid delete phase.' unless %w[prepared model_moved preview_moved asset_moved complete].include?(journal['phase'])
+        raise ArgumentError, 'Delete journal contains a path field.' if journal_contains_path_field?(journal)
+        raise ArgumentError, 'Delete journal path does not match id.' unless File.expand_path(path) == delete_journal_path(journal['id'])
+        payloads = journal['payloads']
+        valid_payloads = payloads.is_a?(Array) && payloads.map { |payload| payload['name'] }.sort == TRANSACTION_PAYLOADS.sort &&
+                         payloads.all? { |payload| payload.is_a?(Hash) && [true, false].include?(payload['existed']) }
+        raise ArgumentError, 'Invalid delete payload list.' unless valid_payloads
+      end
+
       def transaction_journal_path(txid)
         FS.transaction_path(@lib_root, txid, 'transaction.json')
       end
@@ -971,7 +1041,7 @@ module Drale
       end
 
       def detect_format
-        return :legacy_read_only if File.file?(FS.index_path(@lib_root)) && !complete_v4_catalog_activation? && !v4_asset_tree?
+        return :legacy_read_only if File.file?(FS.index_path(@lib_root))
 
         return :v4 if declared_v4_catalog?
         return :v4 if File.directory?(FS.assets_root(@lib_root))
