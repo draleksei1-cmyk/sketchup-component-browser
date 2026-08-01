@@ -21,7 +21,7 @@
         <div class="category-list" id="category-list"></div>
         <div class="rail-bottom">
           <button id="save-selected-btn" class="quiet-button" type="button">Сохранить выделенное</button>
-          <button id="settings-btn" class="quiet-button" type="button"><img src="../icons/settings.svg" alt="" /> Настройки</button>
+          <button id="settings-btn" class="icon-button rail-settings-button" type="button" aria-label="Настройки" title="Настройки"><img src="../icons/settings.svg" alt="" /></button>
         </div>
       </aside>
 
@@ -43,6 +43,7 @@
           </div>
         </header>
         <div id="status-line" class="status-line" hidden></div>
+        <section id="legacy-library-notice" class="legacy-library-notice" hidden aria-live="polite"><strong>Эта папка библиотеки доступна только для чтения.</strong><span>Исходные файлы не будут изменены.</span><div><button id="legacy-create-root" class="primary-button" type="button">Создать новую библиотеку</button><button id="legacy-change-root" class="text-button" type="button">Изменить папку…</button></div></section>
         <div id="array-pick-banner" class="array-pick-banner" hidden></div>
         <section id="cards-grid" class="cards-grid size-medium" aria-label="Компоненты"></section>
         <div id="empty-state" class="empty-state" hidden>Ничего не найдено</div>
@@ -51,8 +52,8 @@
       <aside id="details-drawer" class="details-drawer" aria-label="Свойства компонента" aria-hidden="true" hidden>
         <header class="drawer-header"><div><span class="eyebrow">Компонент</span><h2 id="drawer-title">—</h2></div><div><button id="drawer-favorite" class="icon-button" type="button" aria-label="В избранное"><img src="../icons/star.svg" alt="" /></button><button id="drawer-close" class="icon-button" type="button" aria-label="Закрыть свойства"><img src="../icons/close.svg" alt="" /></button></div></header>
         <img id="drawer-preview" class="drawer-preview" alt="Превью выбранного компонента" />
-        <button id="primary-insert" class="primary-button" type="button"><img src="../icons/brick.svg" alt="" /> <span id="primary-insert-label">Вставить</span></button>
-        <details open><summary>Размещение</summary><label><input id="opt-surface" type="checkbox" data-insert-opt="place_on_surface" /> Ставить на поверхность</label><label><input id="opt-normal" type="checkbox" data-insert-opt="align_to_normal" /> Повернуть по нормали</label><label><input id="opt-random" type="checkbox" data-insert-opt="random_quadrant" /> Случайный поворот</label><label><input id="opt-ground" type="checkbox" data-insert-opt="drop_to_ground" /> Притянуть к земле</label><button id="drawer-brush" class="text-button" type="button">Многократная вставка</button></details>
+        <div class="drawer-primary-actions"><button id="primary-insert" class="primary-button" type="button"><img src="../icons/insert.svg" alt="" /> <span id="primary-insert-label">Вставить</span></button><button id="drawer-brush" class="primary-button secondary-primary-button" type="button">Многократная вставка</button></div>
+        <details open><summary>Размещение</summary><label class="placement-option"><input id="opt-surface" type="checkbox" data-insert-opt="place_on_surface" /> <span>Ставить на поверхность</span></label><label class="placement-option"><input id="opt-normal" type="checkbox" data-insert-opt="align_to_normal" /> <span>Повернуть по нормали</span></label><label class="placement-option random-rotation-option"><input id="opt-random" type="checkbox" data-insert-opt="random_quadrant" /> <span>Случайный поворот</span><input id="opt-random-step" type="number" min="1" max="360" step="1" value="90" aria-label="Шаг случайного поворота, градусы" /><span>°</span></label><label class="placement-option"><input id="opt-ground" type="checkbox" data-insert-opt="drop_to_ground" /> <span>Притянуть к земле</span></label></details>
         <details><summary>Редактирование</summary><label>Имя<input id="drawer-name" type="text" /></label><label>Категория<select id="drawer-category"></select></label><label>Описание<textarea id="drawer-description" rows="3"></textarea></label><label>Теги<input id="drawer-tags" type="text" placeholder="Через запятую" /></label></details>
         <details><summary>Замена</summary><button id="drawer-replace" class="text-button" type="button">Заменить выделенное</button><button id="drawer-replace-from-selection" class="text-button" type="button">Заменить на выделенное в модели</button><button id="drawer-model-select-all" class="text-button" type="button" hidden>Выбрать все экземпляры</button></details>
         <details><summary>Обслуживание</summary><button id="drawer-regen" class="text-button" type="button">Пересоздать превью</button><button id="drawer-show-file" class="text-button" type="button">Показать файл</button><button id="drawer-open-folder" class="text-button" type="button">Открыть папку</button></details>

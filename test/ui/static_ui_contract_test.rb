@@ -19,6 +19,10 @@ class StaticUiContractTest < Minitest::Test
     @css ||= [File.read(File.join(UI, 'styles.css'), encoding: 'UTF-8'), File.read(File.join(UI, 'visibility.css'), encoding: 'UTF-8')].join
   end
 
+  def main
+    @main ||= File.read(File.join(ROOT, 'component_library_browser', 'main.rb'), encoding: 'UTF-8')
+  end
+
   def test_realistic_fixture_has_at_least_twelve_library_items
     fixture = JSON.parse(File.read(File.join(__dir__, 'fixtures', 'library-state.json'), encoding: 'UTF-8'))
     assert_operator fixture.fetch('items').length, :>=, 12
@@ -114,6 +118,43 @@ class StaticUiContractTest < Minitest::Test
     assert_includes html, 'Вставить'
     assert_includes html, 'data-action="select_all_model"'
     refute_match(/data-action=["']select_all_model["'][^>]*>Удалить</, html)
-    assert_match(/contextInsert\.textContent=modelItem \? "Сохранить в библиотеку" : "Вставить"/, js)
+    assert_includes js, 'modeltab_save_to_library'
+  end
+
+  def test_ux_pass_keeps_the_library_navigable_and_uses_canonical_action_icons
+    assert_match(/id=["']settings-btn["'][^>]*class=["'][^"']*rail-settings-button/, html)
+    assert_match(/src=["']\.\.\/icons\/settings\.svg["']/, html)
+    assert_match(/src=["']\.\.\/icons\/insert\.svg["']/, html)
+    assert_match(/class=["']drawer-primary-actions["']/, html)
+    assert_match(/id=["']primary-insert["']/, html)
+    assert_match(/id=["']drawer-brush["']/, html)
+    assert_includes css, '.rail-settings-button{width:32px;height:32px'
+    assert_includes css, '@media(min-width:1180px)'
+    assert_includes css, '@media(max-width:1179px)'
+    assert_includes css, '.library-card.selected{'
+    assert_includes css, 'transform:scale(1.015)'
+  end
+
+  def test_ux_pass_has_inline_placement_controls_and_validated_rotation_step
+    assert_match(/class=["']placement-option["'][^>]*>\s*<input id=["']opt-surface["']/, html)
+    assert_match(/id=["']opt-random-step["'][^>]*type=["']number["'][^>]*min=["']1["'][^>]*max=["']360["'][^>]*value=["']90["']/, html)
+    assert_includes css, 'details .placement-option{display:flex;align-items:center'
+    assert_includes js, 'setRotationStep'
+    assert_includes js, 'random_step_degrees'
+  end
+
+  def test_ux_pass_exposes_safe_favorites_and_actionable_legacy_recovery
+    %w[legacy-library-notice legacy-create-root legacy-change-root].each { |id| assert_match(/id=["']#{id}["']/, html) }
+    assert_includes js, 'card-favorite'
+    assert_includes js, 'toggle_favorite'
+    assert_includes js, 'create_new_library_root'
+    assert_includes main, 'def create_new_library_root'
+    assert_includes main, 'legacy_read_only?'
+  end
+
+  def test_save_new_category_continues_to_metadata_without_reopening_the_category_picker
+    assert_includes main, 'def prompt_save_metadata'
+    assert_match(/selected_category\.to_s == ADD_CATEGORY_OPTION.*?current_category = new_category.*?prompt_save_metadata/m, main)
+    assert_includes main, 'description: description'
   end
 end

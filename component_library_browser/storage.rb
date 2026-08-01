@@ -41,6 +41,10 @@ module Drale
         deep_copy(@index)
       end
 
+      def legacy_read_only?
+        @format == :legacy_read_only
+      end
+
       def recovery_status
         deep_copy(@recovery_status)
       end

@@ -153,10 +153,10 @@ module Drale
       )
       return unless result
 
-      category, name, tags_input = result
+      category, name, description, tags_input = result
       saved =
         if entity.is_a?(Sketchup::Group)
-          save_group_as_component_to_library(entity, category: category, name: name, tags: tags_input)
+          save_group_as_component_to_library(entity, category: category, name: name, description: description, tags: tags_input)
         else
           dedupe = resolve_dedup_for_definition(entity.definition, fallback_name: name)
           return nil unless dedupe
@@ -166,6 +166,7 @@ module Drale
             category: category,
             display_name: name,
             tags: tags_input,
+            description: description,
             content_hash: dedupe['content_hash']
           )
         end
@@ -194,6 +195,22 @@ module Drale
       push_state_to_dialog
     rescue StandardError => error
       show_error("\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", error)
+    end
+
+    def create_new_library_root
+      current_root = @storage ? @storage.lib_root : read_saved_root
+      selected_root = choose_library_root(current_root)
+      return unless selected_root
+
+      selected_root = File.expand_path(selected_root)
+      raise ArgumentError, 'Выберите новую пустую папку библиотеки.' if same_path_ci?(selected_root, current_root)
+      raise ArgumentError, 'Новая папка библиотеки должна быть пустой.' if File.directory?(selected_root) && !Dir.children(selected_root).empty?
+
+      configure_storage_root(selected_root, prompt_scan: false)
+      push_state_to_dialog
+    rescue StandardError => error
+      show_error('Создание новой библиотеки', error)
+      nil
     end
 
     def open_log_file
@@ -492,7 +509,7 @@ module Drale
       )
       return nil unless result
 
-      category, name, tags_input = result
+      category, name, description, tags_input = result
       source = definition.respond_to?(:group?) && definition.group? ? 'group' : 'component'
       dedupe = resolve_dedup_for_definition(definition, fallback_name: name)
       return nil unless dedupe
@@ -502,6 +519,7 @@ module Drale
         category: category,
         display_name: name,
         tags: tags_input,
+        description: description,
         content_hash: dedupe['content_hash']
       )
       ensure_item_thumbnail(saved['item'])
@@ -1443,43 +1461,45 @@ module Drale
     end
 
     def prompt_save_selected_data(default_category:, default_name:, default_tags:)
-      current_category = default_category.to_s
-      current_name = default_name.to_s
-      current_tags = default_tags.to_s
+      categories = @storage.index['categories'].dup
+      categories << default_category unless default_category.to_s.strip.empty? || categories.any? { |category| FS.same_name?(category, default_category) }
+      result = UI.inputbox(
+        ["\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f"],
+        [default_category.to_s],
+        [(categories.sort + [ADD_CATEGORY_OPTION]).join('|')],
+        "\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u0432 \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0443"
+      )
+      return nil unless result
 
-      loop do
-        categories = @storage.index['categories'].dup
-        categories << current_category unless current_category.to_s.strip.empty? || categories.any? { |c| FS.same_name?(c, current_category) }
-        categories.sort!
-        dropdown_items = categories + [ADD_CATEGORY_OPTION]
+      selected_category = result[0].to_s
+      if selected_category.to_s == ADD_CATEGORY_OPTION
+        new_category = prompt_new_category_name
+        return nil unless new_category
 
-        prompts = [
-          "\u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f",
-          "\u0418\u043c\u044f",
-          "\u0422\u0435\u0433\u0438 (\u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043f\u044f\u0442\u0443\u044e)"
-        ]
-        defaults_values = [current_category, current_name, current_tags]
-        list = [dropdown_items.join('|'), '', '']
+        current_category = new_category
+        metadata = prompt_save_metadata(default_name: default_name, default_tags: default_tags)
+        return nil unless metadata
 
-        result = UI.inputbox(prompts, defaults_values, list, "\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c \u0432 \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0443")
-        return nil unless result
-
-        selected_category, selected_name, selected_tags = result
-        if selected_category.to_s == ADD_CATEGORY_OPTION
-          new_category = prompt_new_category_name
-          next unless new_category
-
-          current_category = new_category
-          current_name = selected_name.to_s
-          current_tags = selected_tags.to_s
-          next
-        end
-
-        return [selected_category, selected_name, selected_tags]
+        return [current_category, *metadata]
       end
+
+      metadata = prompt_save_metadata(default_name: default_name, default_tags: default_tags)
+      return nil unless metadata
+
+      [selected_category, *metadata]
     end
 
-    def save_group_as_component_to_library(group, category:, name:, tags:)
+    def prompt_save_metadata(default_name:, default_tags:)
+      result = UI.inputbox(
+        ["\u0418\u043c\u044f", "\u041e\u043f\u0438\u0441\u0430\u043d\u0438\u0435", "\u0422\u0435\u0433\u0438 (\u0447\u0435\u0440\u0435\u0437 \u0437\u0430\u043f\u044f\u0442\u0443\u044e)"],
+        [default_name.to_s, '', default_tags.to_s],
+        ['', '', ''],
+        "\u041c\u0435\u0442\u0430\u0434\u0430\u043d\u043d\u044b\u0435 \u043a\u043e\u043c\u043f\u043e\u043d\u0435\u043d\u0442\u0430"
+      )
+      result && [result[0].to_s, result[1].to_s, result[2].to_s]
+    end
+
+    def save_group_as_component_to_library(group, category:, name:, description:, tags:)
       model = Sketchup.active_model
       temp_group = nil
       temp_component = nil
@@ -1500,6 +1520,7 @@ module Drale
           category: category,
           display_name: name,
           tags: tags,
+          description: description,
           content_hash: dedupe['content_hash']
         )
         temp_component.erase! if temp_component.valid?
@@ -2413,6 +2434,7 @@ menu.add_item(@commands[:open_log])
 
       {
         'lib_root' => @storage.lib_root,
+        'legacy_read_only' => @storage.legacy_read_only?,
         'categories' => index['categories'].sort,
         'pinned_categories' => pinned_categories,
         'items' => items,
@@ -2659,9 +2681,8 @@ menu.add_item(@commands[:open_log])
     end
 
     def normalize_random_step_degrees(value)
-      allowed = [90, 45, 30, 15, 10, 5]
       step = value.to_i
-      allowed.include?(step) ? step : 90
+      step.between?(1, 360) ? step : 90
     rescue StandardError
       90
     end
