@@ -33,6 +33,7 @@ $artifactName = "component-library-browser-$version.rbz"
 $artifact = Join-Path $OutputDirectory $artifactName
 $manifest = "$artifact.sha256"
 $tempArtifact = Join-Path ([IO.Path]::GetTempPath()) ("clb-rbz-" + [guid]::NewGuid().ToString('N') + '.rbz')
+$allowedEntryPattern = '^component_library_browser\.rb$|^component_library_browser/VERSION$|^component_library_browser/[A-Za-z0-9_.-]+\.rb$|^component_library_browser/(array|icons|services|tools|ui)/[A-Za-z0-9_.-]+$'
 
 $files = @($loader) + @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File | ForEach-Object { $_.FullName })
 $entries = @(
@@ -41,7 +42,7 @@ $entries = @(
     $relative = $full.Substring($root.Length).TrimStart('\', '/').Replace('\', '/')
     if ([IO.Path]::IsPathRooted($relative) -or $relative -match '(^|/)\.\.(/|$)') { throw "Unsafe package path: $relative" }
     [pscustomobject]@{ FullName = $full; Relative = $relative }
-  } | Sort-Object Relative
+  } | Where-Object { $_.Relative -match $allowedEntryPattern } | Sort-Object Relative
 )
 
 if (@($entries | Where-Object { $_.Relative -eq $loaderName }).Count -ne 1) { throw 'RBZ must contain exactly one extension loader.' }
@@ -76,6 +77,8 @@ try {
       if (@($paths | Where-Object { $_ -eq $loaderName }).Count -ne 1) { throw 'Self-check: loader count is invalid.' }
       if ($paths -notcontains "$packageName/VERSION") { throw 'Self-check: VERSION is missing.' }
       if ($paths | Where-Object { $_ -match '(^|/)\.\.(/|$)|^/|^[A-Za-z]:' }) { throw 'Self-check: archive has unsafe path.' }
+      if ($paths | Where-Object { $_ -notmatch $allowedEntryPattern }) { throw 'Self-check: archive contains a non-runtime or local path.' }
+      if ($paths | Where-Object { $_ -match '(^|/)runtime_state/|disabled_plugins|pending_update|(^|/)(test|docs|dist|\.git|worktrees)(/|$)' }) { throw 'Self-check: archive contains excluded local state.' }
     } finally { $read.Dispose() }
   }
 

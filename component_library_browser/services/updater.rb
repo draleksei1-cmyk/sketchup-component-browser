@@ -20,6 +20,9 @@ module Drale
       LOADER_NAME = 'component_library_browser.rb'.freeze
       PACKAGE_NAME = 'component_library_browser'.freeze
       REQUIRED_DIRECTORIES = %w[icons ui tools services].freeze
+      TRUSTED_ASSET_HOSTS = %w[github.com github-releases.githubusercontent.com release-assets.githubusercontent.com objects.githubusercontent.com].freeze
+      REDIRECT_CODES = [301, 302, 307, 308].freeze
+      MAX_REDIRECTS = 3
 
       class ReleaseError < StandardError; end
       class VerificationError < StandardError; end
@@ -76,6 +79,8 @@ module Drale
         checksum_names = ["#{rbz['name']}.sha256", "#{rbz['name']}.sha256.txt"]
         checksum = assets.find { |asset| checksum_names.include?(asset['name'].to_s) }
         raise ReleaseError, 'Latest release has no matching RBZ checksum asset' unless checksum && checksum['browser_download_url']
+        validate_asset_url!(rbz.fetch('browser_download_url'))
+        validate_asset_url!(checksum.fetch('browser_download_url'))
 
         {
           'version' => version,
@@ -108,8 +113,14 @@ module Drale
         FileUtils.remove_entry_secure(workspace) if File.directory?(workspace)
         { 'success' => true, 'version' => update.fetch('latest_version') }
       rescue Errno::EACCES, Errno::EPERM, Errno::EBUSY => error
-        Logger.warn("Update staged at #{workspace}; SketchUp restart required: #{error.message}")
-        { 'success' => false, 'restart_required' => true, 'staged_path' => workspace, 'error' => error.message }
+        if defined?(rbz_path) && File.file?(rbz_path) && File.file?(checksum_path) && File.directory?(stage_dir)
+          staged_path = persist_pending_update!(rbz_path, checksum_path, stage_dir, update.fetch('latest_version'))
+          FileUtils.remove_entry_secure(workspace) if File.directory?(workspace)
+          Logger.warn("Update staged at #{staged_path}; SketchUp restart required: #{error.message}")
+          { 'success' => false, 'restart_required' => true, 'staged_path' => staged_path, 'error' => error.message }
+        else
+          { 'success' => false, 'error' => error.message }
+        end
       rescue StandardError => error
         Logger.error('Update installation failed', error)
         { 'success' => false, 'error' => error.message, 'staged_path' => (defined?(workspace) ? workspace : nil) }
@@ -139,6 +150,55 @@ module Drale
         raise VerificationError, 'RBZ SHA256 does not match release manifest' unless Digest::SHA256.file(rbz_path).hexdigest.casecmp?(digest)
 
         true
+      end
+
+      def download_to!(url, path, http_get: nil)
+        uri = validate_asset_url!(url)
+        redirects = 0
+        loop do
+          response = http_request(uri, open_timeout: 30, read_timeout: 120, http_get: http_get)
+          if response.code.to_i == 200
+            File.binwrite(path, response.body)
+            return true
+          end
+          raise ReleaseError, "Download returned HTTP #{response.code}" unless REDIRECT_CODES.include?(response.code.to_i)
+          raise ReleaseError, 'Download redirect limit exceeded' if redirects >= MAX_REDIRECTS
+
+          location = response['location'].to_s
+          raise ReleaseError, 'Download redirect has no location' if location.empty?
+          uri = validate_asset_url!(URI.join(uri.to_s, location).to_s)
+          redirects += 1
+        end
+      end
+
+      def pending_update_manifest_path
+        File.join(package_dir, '.pending_update.json')
+      end
+
+      def apply_pending_update(manifest_path: pending_update_manifest_path, install: nil)
+        return nil unless File.file?(manifest_path)
+
+        pending_root = pending_update_root(manifest_path)
+        data = JSON.parse(File.read(manifest_path, encoding: 'UTF-8'))
+        version = data.fetch('version').to_s
+        raise VerificationError, 'Pending update has invalid version' unless semantic_version?(version)
+        rbz_path = pending_file!(pending_root, data.fetch('asset_name'))
+        checksum_path = pending_file!(pending_root, data.fetch('checksum_name'))
+        stage_dir = pending_file!(pending_root, data.fetch('stage_name'))
+        raise VerificationError, 'Pending RBZ is missing' unless File.file?(rbz_path)
+        raise VerificationError, 'Pending checksum is missing' unless File.file?(checksum_path)
+        verify_checksum!(rbz_path, File.read(checksum_path, encoding: 'UTF-8'))
+        validated = validate_staged_package!(stage_dir, expected_version: version)
+        (install || method(:install_staged_package!)).call(validated, pending_root)
+        write_update_state(version)
+        clear_pending_update!(manifest_path)
+        { 'success' => true, 'version' => version }
+      rescue Errno::EACCES, Errno::EPERM, Errno::EBUSY => error
+        { 'success' => false, 'restart_required' => true, 'error' => error.message }
+      rescue StandardError => error
+        clear_pending_update!(manifest_path) if defined?(manifest_path) && manifest_path
+        Logger.warn("Discarded invalid pending update: #{error.message}")
+        { 'success' => false, 'discarded' => true, 'error' => error.message }
       end
 
       def validate_staged_package!(stage_root, expected_version: nil)
@@ -171,6 +231,42 @@ module Drale
 
       private
 
+      def persist_pending_update!(rbz_path, checksum_path, stage_dir, version)
+        manifest_path = pending_update_manifest_path
+        pending_root = pending_update_root(manifest_path)
+        FileUtils.rm_rf(pending_root) if File.directory?(pending_root)
+        FileUtils.mkdir_p(pending_root)
+        asset_name = File.basename(rbz_path)
+        checksum_name = File.basename(checksum_path)
+        FileUtils.cp(rbz_path, File.join(pending_root, asset_name))
+        FileUtils.cp(checksum_path, File.join(pending_root, checksum_name))
+        FileUtils.cp_r(stage_dir, File.join(pending_root, 'staged'))
+        File.write(manifest_path, JSON.pretty_generate(
+          'version' => version,
+          'asset_name' => asset_name,
+          'checksum_name' => checksum_name,
+          'stage_name' => 'staged'
+        ))
+        pending_root
+      end
+
+      def pending_update_root(manifest_path)
+        File.join(File.dirname(File.expand_path(manifest_path)), '.pending_update')
+      end
+
+      def pending_file!(pending_root, name)
+        name = name.to_s
+        raise VerificationError, 'Pending update has unsafe file name' if name.empty? || File.basename(name) != name
+
+        assert_path_within!(pending_root, File.join(pending_root, name))
+      end
+
+      def clear_pending_update!(manifest_path)
+        pending_root = pending_update_root(manifest_path)
+        FileUtils.rm_f(manifest_path) if File.file?(manifest_path)
+        FileUtils.rm_rf(pending_root) if File.directory?(pending_root)
+      end
+
       def install_staged_package!(validated, workspace)
         target_package = package_dir
         target_loader = loader_file
@@ -202,13 +298,6 @@ module Drale
         FileUtils.cp_r(File.join(backup, PACKAGE_NAME), target_package) if File.directory?(File.join(backup, PACKAGE_NAME))
         FileUtils.cp(File.join(backup, LOADER_NAME), target_loader) if File.file?(File.join(backup, LOADER_NAME))
         raise
-      end
-
-      def download_to!(url, path, http_get: nil)
-        response = http_request(URI(url), open_timeout: 30, read_timeout: 120, http_get: http_get)
-        raise ReleaseError, "Download returned HTTP #{response.code}" unless response.code.to_i == 200
-
-        File.binwrite(path, response.body)
       end
 
       def http_request(uri, open_timeout:, read_timeout:, http_get: nil)
@@ -267,6 +356,21 @@ module Drale
 
       def semantic_version?(version)
         version.match?(/\A\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\z/)
+      end
+
+      def validate_asset_url!(url)
+        uri = URI(url.to_s)
+        raise ReleaseError, 'Release asset URL must use HTTPS' unless uri.scheme == 'https'
+        raise ReleaseError, "Release asset host is not trusted: #{uri.host}" unless TRUSTED_ASSET_HOSTS.include?(uri.host.to_s.downcase)
+        if uri.host.to_s.casecmp?('github.com')
+          prefix = "/#{GITHUB_OWNER}/#{GITHUB_REPO}/releases/download/"
+          raise ReleaseError, 'Release asset URL is outside this repository' unless uri.path.start_with?(prefix)
+        end
+        raise ReleaseError, 'Release asset URL has no file path' if File.basename(uri.path).to_s.empty?
+
+        uri
+      rescue URI::InvalidURIError => error
+        raise ReleaseError, "Invalid release asset URL: #{error.message}"
       end
 
       def compare_versions(a, b)

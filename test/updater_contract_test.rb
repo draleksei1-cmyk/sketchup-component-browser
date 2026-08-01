@@ -31,15 +31,19 @@ require_relative '../component_library_browser/services/updater'
 class UpdaterContractTest < Minitest::Test
   Updater = Drale::ComponentLibraryBrowser::Updater
 
-  Response = Struct.new(:code, :body)
+  Response = Struct.new(:code, :body, :headers) do
+    def [](name)
+      (headers || {})[name.to_s.downcase]
+    end
+  end
 
   def release_payload
     {
       'tag_name' => 'v0.3.0',
       'assets' => [
-        { 'name' => 'component-library-browser-0.3.0.rbz', 'browser_download_url' => 'https://example.test/release.rbz' },
-        { 'name' => 'component-library-browser-0.3.0.rbz.sha256', 'browser_download_url' => 'https://example.test/release.rbz.sha256' },
-        { 'name' => 'source.zip', 'browser_download_url' => 'https://example.test/source.zip' }
+        { 'name' => 'component-library-browser-0.3.0.rbz', 'browser_download_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/component-library-browser-0.3.0.rbz' },
+        { 'name' => 'component-library-browser-0.3.0.rbz.sha256', 'browser_download_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/component-library-browser-0.3.0.rbz.sha256' },
+        { 'name' => 'source.zip', 'browser_download_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/archive/v0.3.0.zip' }
       ]
     }
   end
@@ -62,8 +66,8 @@ class UpdaterContractTest < Minitest::Test
     release = Updater.fetch_latest_release(http_get: http_get)
 
     assert_equal '0.3.0', release.fetch('version')
-    assert_equal 'https://example.test/release.rbz', release.fetch('rbz_url')
-    assert_equal 'https://example.test/release.rbz.sha256', release.fetch('checksum_url')
+    assert_equal 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/component-library-browser-0.3.0.rbz', release.fetch('rbz_url')
+    assert_equal 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/component-library-browser-0.3.0.rbz.sha256', release.fetch('checksum_url')
   end
 
   def test_release_without_matching_checksum_is_rejected
@@ -110,6 +114,78 @@ class UpdaterContractTest < Minitest::Test
       end
 
       assert_match(/outside/i, error.message)
+    end
+  end
+
+  def test_download_follows_bounded_https_redirects_for_trusted_release_asset_hosts
+    calls = []
+    http_get = lambda do |uri, **_options|
+      calls << uri.to_s
+      if calls.length == 1
+        Response.new('302', '', 'location' => 'https://github-releases.githubusercontent.com/assets/release.rbz')
+      else
+        Response.new('200', 'signed rbz')
+      end
+    end
+
+    Dir.mktmpdir('updater-download-') do |dir|
+      target = File.join(dir, 'release.rbz')
+      Updater.download_to!('https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/release.rbz', target, http_get: http_get)
+
+      assert_equal 'signed rbz', File.binread(target)
+      assert_equal 2, calls.length
+      assert_match(%r{\Ahttps://github-releases\.githubusercontent\.com/}, calls.last)
+    end
+  end
+
+  def test_download_rejects_redirect_to_untrusted_or_non_https_host
+    http_get = ->(_uri, **_options) { Response.new('302', '', 'location' => 'http://example.test/release.rbz') }
+
+    Dir.mktmpdir('updater-download-') do |dir|
+      error = assert_raises(Updater::ReleaseError) do
+        Updater.download_to!('https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/release.rbz', File.join(dir, 'release.rbz'), http_get: http_get)
+      end
+      assert_match(/HTTPS|trusted/i, error.message)
+    end
+  end
+
+  def test_pending_update_applies_validated_staging_and_removes_manifest
+    Dir.mktmpdir('pending-update-') do |dir|
+      package = File.join(dir, 'component_library_browser')
+      pending_root = File.join(package, '.pending_update')
+      staged = File.join(pending_root, 'staged')
+      %w[icons ui tools services].each { |name| FileUtils.mkdir_p(File.join(staged, 'component_library_browser', name)) }
+      File.write(File.join(staged, 'component_library_browser.rb'), '# loader')
+      File.write(File.join(staged, 'component_library_browser', 'VERSION'), '0.3.0')
+      rbz = File.join(pending_root, 'release.rbz')
+      FileUtils.mkdir_p(pending_root)
+      File.binwrite(rbz, 'safe pending archive')
+      digest = Digest::SHA256.file(rbz).hexdigest
+      File.write(File.join(pending_root, 'release.rbz.sha256'), "#{digest}  release.rbz\n")
+      manifest = File.join(package, '.pending_update.json')
+      File.write(manifest, JSON.generate('version' => '0.3.0', 'asset_name' => 'release.rbz', 'checksum_name' => 'release.rbz.sha256', 'stage_name' => 'staged'))
+
+      applied = false
+      result = Updater.apply_pending_update(manifest_path: manifest, install: ->(validated, _workspace) { applied = validated['version'] == '0.3.0' })
+
+      assert result['success']
+      assert applied
+      refute File.exist?(manifest)
+      refute File.exist?(pending_root)
+    end
+  end
+
+  def test_invalid_pending_update_is_discarded_without_install
+    Dir.mktmpdir('pending-update-') do |dir|
+      package = File.join(dir, 'component_library_browser')
+      FileUtils.mkdir_p(package)
+      manifest = File.join(package, '.pending_update.json')
+      File.write(manifest, '{"version":"0.3.0","stage_name":"../outside"}')
+
+      result = Updater.apply_pending_update(manifest_path: manifest, install: ->(*) { flunk 'invalid pending update must not install' })
+
+      assert result['discarded']
+      refute File.exist?(manifest)
     end
   end
 end

@@ -28,6 +28,7 @@ class PackageBuildContractTest < Minitest::Test
       assert_includes paths, 'component_library_browser/VERSION'
       assert paths.all? { |path| !path.start_with?('/', '../') && !path.include?('/../') }
       refute paths.any? { |path| path.match?(%r{\A(?:test|docs|\.git|component_library_browser_checkpoints)/}) }
+      refute paths.any? { |path| path.include?('/runtime_state/') || path.match?(/disabled_plugins/i) || path.match?(/pending_update/i) }
     end
   end
 end

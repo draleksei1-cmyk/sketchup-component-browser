@@ -27,10 +27,19 @@ jobs:
         run: |
           Get-ChildItem component_library_browser -Recurse -Filter *.rb | ForEach-Object { ruby -c $_.FullName }
           ruby -c component_library_browser.rb
-          Get-ChildItem test -Filter *_test.rb | ForEach-Object { ruby $_.FullName }
+          Get-ChildItem test -Recurse -Filter *_test.rb | ForEach-Object { ruby $_.FullName }
+          ruby test/ui/static_ui_contract_test.rb
 
       - name: Static UI check
-        run: node --check component_library_browser/ui/app.js
+        run: |
+          node --check component_library_browser/ui/app.js
+          node --check test/ui/test_harness.js
+
+      - name: Verify tag matches package VERSION
+        shell: pwsh
+        run: |
+          $version = (Get-Content component_library_browser/VERSION -Raw).Trim()
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag $env:GITHUB_REF_NAME must equal v$version" }
 
       - name: Build verified RBZ
         shell: pwsh

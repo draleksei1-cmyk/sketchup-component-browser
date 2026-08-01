@@ -98,6 +98,12 @@ module Drale
     end
 
     def boot!
+      pending_update = Updater.apply_pending_update
+      if pending_update && pending_update['restart_required']
+        Logger.warn('Pending update remains staged; restart SketchUp again after closing locked files.')
+      elsif pending_update && pending_update['success']
+        Logger.info("Pending update v#{pending_update['version']} applied before UI initialization.")
+      end
       setup_commands
       setup_menu
       setup_toolbar
