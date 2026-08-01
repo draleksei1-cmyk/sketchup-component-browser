@@ -187,8 +187,9 @@ module Drale
     end
 
     def open_settings
+      @pending_open_settings = true
       open_library
-      @dialog&.execute_script('window.ComponentLibrary && window.ComponentLibrary.openSettings();')
+      open_pending_settings
       true
     rescue StandardError => error
       show_error("Настройки", error)
@@ -948,19 +949,27 @@ module Drale
         else
           "Установлена последняя версия: v#{current_version}"
         end
-      update_button = available ? '<button class="primary" type="button" onclick="sketchup.install_update()">Обновить</button>' : ''
+      update_button = available ? '<button id="update-confirm" class="primary" type="button" onclick="sketchup.install_update()">Обновить</button>' : ''
       dialog = UI::HtmlDialog.new(
         dialog_title: 'Обновление Component Library Browser', preferences_key: 'DraleComponentLibraryBrowserUpdate',
         style: UI::HtmlDialog::STYLE_DIALOG, resizable: false, width: 390, height: 180
       )
       dialog.set_html(<<~HTML)
-        <!doctype html><meta charset="utf-8"><style>body{margin:0;padding:20px;font:13px/1.45 Segoe UI,Arial;color:#20242b;background:#fff}p{margin:0 0 14px}#update-status{min-height:20px;color:#5a6470}.actions{display:flex;justify-content:flex-end;gap:8px}button{padding:7px 14px;border:1px solid #c9ced6;border-radius:5px;background:#fff}button.primary{background:#2463eb;color:#fff;border-color:#2463eb}</style><p>#{CGI.escapeHTML(summary)}</p><p id="update-status"></p><div class="actions">#{update_button}<button type="button" onclick="sketchup.cancel_update()">Отмена</button></div>
+        <!doctype html><meta charset="utf-8"><style>body{margin:0;padding:20px;font:13px/1.45 Segoe UI,Arial;color:#20242b;background:#fff}p{margin:0 0 14px}#update-status{min-height:20px;color:#5a6470}.actions{display:flex;justify-content:flex-end;gap:8px}button{padding:7px 14px;border:1px solid #c9ced6;border-radius:5px;background:#fff}button.primary{background:#2463eb;color:#fff;border-color:#2463eb}</style><p>#{CGI.escapeHTML(summary)}</p><p id="update-status"></p><div class="actions">#{update_button}<button id="update-cancel" type="button" onclick="sketchup.cancel_update()">Отмена</button></div>
       HTML
-      dialog.add_action_callback('cancel_update') { dialog.close; @update_dialog = nil }
+      @update_installing = false
+      dialog.add_action_callback('cancel_update') do
+        next if @update_installing
+
+        dialog.close
+        @update_dialog = nil
+      end
       dialog.add_action_callback('install_update') do
         next unless available
+        next if @update_installing
 
-        dialog.execute_script("document.getElementById('update-status').textContent='Подготовка обновления…';")
+        @update_installing = true
+        dialog.execute_script("document.getElementById('update-status').textContent='Подготовка обновления…';document.getElementById('update-confirm').disabled=true;document.getElementById('update-cancel').disabled=true;")
         schedule_update_install(dialog, result)
       end
       @update_dialog = dialog
@@ -985,6 +994,8 @@ module Drale
       end
     rescue StandardError => error
       set_update_dialog_status(dialog, "Ошибка обновления: #{error.message}")
+    ensure
+      @update_installing = false
     end
 
     def set_update_dialog_status(dialog, text)
@@ -1997,11 +2008,14 @@ menu.add_item(@commands[:open_log])
       end
 
       @dialog = UI::HtmlDialog.new(DIALOG_OPTIONS)
+      @dialog_ready = false
       @dialog.set_file(File.join(__dir__, 'ui', 'index.html'))
       @dialog.set_on_closed do
         Logger.info('Окно библиотеки закрыто')
         detach_dialog_selection_observer
         @dialog = nil
+        @dialog_ready = false
+        @pending_open_settings = false
       end
 
       register_dialog_callbacks(@dialog)
@@ -2010,9 +2024,18 @@ menu.add_item(@commands[:open_log])
       Logger.info('Окно библиотеки открыто')
     end
 
+    def open_pending_settings
+      return unless @pending_open_settings && @dialog_ready && @dialog
+
+      @pending_open_settings = false
+      @dialog.execute_script('window.ComponentLibrary && window.ComponentLibrary.openSettings();')
+    end
+
     def register_dialog_callbacks(dialog)
       dialog.add_action_callback('ready') do |_action_context, _payload|
+        @dialog_ready = true
         push_state_to_dialog
+        open_pending_settings
       end
 
       dialog.add_action_callback('get_state') do |_action_context, _payload|

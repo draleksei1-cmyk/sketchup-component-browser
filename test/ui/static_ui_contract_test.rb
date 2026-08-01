@@ -186,7 +186,7 @@ class StaticUiContractTest < Minitest::Test
     change_root_method = main[change_root_start, main.index('def create_new_library_root') - change_root_start]
 
     assert_includes settings_method, 'open_library'
-    assert_includes settings_method, 'ComponentLibrary.openSettings'
+    assert_includes settings_method, 'open_pending_settings'
     refute_includes settings_method, 'choose_library_root'
     assert_includes change_root_method, 'choose_library_root'
     assert_match(/settings-change-root.*?ruby\("change_library_root"\)/m, js)
@@ -217,5 +217,29 @@ class StaticUiContractTest < Minitest::Test
     refute_includes cancel_callback, 'download_and_apply_update'
     assert_match(/download_and_apply_update\(update: update, on_status:/m, main)
     assert_includes main, 'Обновление подготовлено. Требуется перезапуск SketchUp.'
+  end
+
+  def test_settings_request_waits_for_a_new_dialog_ready_callback
+    settings_start = main.index('def open_settings')
+    settings_end = main.index('def change_library_root')
+    settings_method = main[settings_start, settings_end - settings_start]
+    ready_callback = main[main.index("dialog.add_action_callback('ready')"), main.index("dialog.add_action_callback('get_state')") - main.index("dialog.add_action_callback('ready')")]
+
+    assert_includes settings_method, '@pending_open_settings = true'
+    assert_includes settings_method, 'open_pending_settings'
+    assert_includes main, '@dialog_ready = false'
+    assert_includes ready_callback, '@dialog_ready = true'
+    assert_includes ready_callback, 'open_pending_settings'
+    assert_match(/def open_pending_settings.*?@pending_open_settings = false.*?ComponentLibrary\.openSettings/m, main)
+  end
+
+  def test_update_install_is_single_flight_and_disables_confirmation_controls
+    assert_includes main, 'id="update-confirm"'
+    assert_includes main, 'id="update-cancel"'
+    assert_match(/next if @update_installing.*?@update_installing = true/m, main)
+    assert_includes main, "document.getElementById('update-confirm').disabled=true"
+    assert_includes main, "document.getElementById('update-cancel').disabled=true"
+    cancel_callback = main[main.index("dialog.add_action_callback('cancel_update')"), main.index("dialog.add_action_callback('install_update')") - main.index("dialog.add_action_callback('cancel_update')")]
+    assert_includes cancel_callback, 'next if @update_installing'
   end
 end
