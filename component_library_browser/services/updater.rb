@@ -92,8 +92,8 @@ module Drale
         raise ReleaseError, "GitHub release response is invalid JSON: #{error.message}"
       end
 
-      def download_and_apply_update(http_get: nil)
-        update = check_for_updates(http_get: http_get)
+      def download_and_apply_update(http_get: nil, update: nil, on_status: nil)
+        update ||= check_for_updates(http_get: http_get)
         return update if update.is_a?(Hash) && update['error']
         return { 'success' => false, 'message' => 'Already up to date.' } unless update && update['available']
 
@@ -102,27 +102,35 @@ module Drale
         checksum_path = "#{rbz_path}.sha256"
         stage_dir = File.join(workspace, 'staged')
 
+        notify_status(on_status, 'Загрузка обновления…')
         download_to!(update.fetch('rbz_url'), rbz_path, http_get: http_get)
         download_to!(update.fetch('checksum_url'), checksum_path, http_get: http_get)
+        notify_status(on_status, 'Проверка контрольной суммы…')
         verify_checksum!(rbz_path, File.read(checksum_path, encoding: 'UTF-8'))
+        notify_status(on_status, 'Безопасная распаковка и проверка…')
         extract_rbz!(rbz_path, stage_dir)
         validated = validate_staged_package!(stage_dir, expected_version: update.fetch('latest_version'))
 
+        notify_status(on_status, 'Установка обновления…')
         install_staged_package!(validated, workspace)
         write_update_state(update.fetch('latest_version'))
         FileUtils.remove_entry_secure(workspace) if File.directory?(workspace)
+        notify_status(on_status, "Обновление v#{update.fetch('latest_version')} установлено.")
         { 'success' => true, 'version' => update.fetch('latest_version') }
       rescue Errno::EACCES, Errno::EPERM, Errno::EBUSY => error
         if defined?(rbz_path) && File.file?(rbz_path) && File.file?(checksum_path) && File.directory?(stage_dir)
           staged_path = persist_pending_update!(rbz_path, checksum_path, stage_dir, update.fetch('latest_version'))
           FileUtils.remove_entry_secure(workspace) if File.directory?(workspace)
           Logger.warn("Update staged at #{staged_path}; SketchUp restart required: #{error.message}")
+          notify_status(on_status, 'Обновление подготовлено. Требуется перезапуск SketchUp.')
           { 'success' => false, 'restart_required' => true, 'staged_path' => staged_path, 'error' => error.message }
         else
+          notify_status(on_status, "Ошибка обновления: #{error.message}")
           { 'success' => false, 'error' => error.message }
         end
       rescue StandardError => error
         Logger.error('Update installation failed', error)
+        notify_status(on_status, "Ошибка обновления: #{error.message}")
         { 'success' => false, 'error' => error.message, 'staged_path' => (defined?(workspace) ? workspace : nil) }
       end
 
@@ -229,6 +237,12 @@ module Drale
       end
 
       private
+
+      def notify_status(callback, text)
+        callback.call(text) if callback
+      rescue StandardError => error
+        Logger.warn("Update status callback failed: #{error.message}")
+      end
 
       def persist_pending_update!(rbz_path, checksum_path, stage_dir, version)
         manifest_path = pending_update_manifest_path

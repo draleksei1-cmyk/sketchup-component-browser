@@ -238,4 +238,70 @@ class UpdaterContractTest < Minitest::Test
       assert_match(/safe RBZ archive/i, error.message)
     end
   end
+
+  def test_download_and_apply_update_reports_progress_for_download_checksum_and_staging
+    Dir.mktmpdir('updater-progress-') do |dir|
+      output = File.join(dir, 'dist')
+      script = File.expand_path('../scripts/build_rbz.ps1', __dir__)
+      _stdout, stderr, status = Open3.capture3('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-OutputDirectory', output, '-SelfTest')
+      assert status.success?, stderr
+
+      rbz = File.join(output, 'component-library-browser-0.2.1.rbz')
+      checksum = "#{Digest::SHA256.file(rbz).hexdigest}  #{File.basename(rbz)}"
+      update = {
+        'available' => true,
+        'latest_version' => '0.2.1',
+        'asset_name' => File.basename(rbz),
+        'rbz_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.2.1/component-library-browser-0.2.1.rbz',
+        'checksum_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.2.1/component-library-browser-0.2.1.rbz.sha256'
+      }
+      installed = nil
+      progress = []
+      http_get = lambda do |uri, **_options|
+        Response.new('200', uri.path.end_with?('.sha256') ? checksum : File.binread(rbz))
+      end
+      original_install = Updater.method(:install_staged_package!)
+      original_state = Updater.method(:write_update_state)
+      Updater.define_singleton_method(:install_staged_package!) { |validated, workspace| installed = [validated, workspace] }
+      Updater.define_singleton_method(:write_update_state) { |_version| true }
+
+      result = Updater.download_and_apply_update(update: update, http_get: http_get, on_status: ->(text) { progress << text })
+
+      assert result['success']
+      assert_equal '0.2.1', installed.first.fetch('version')
+      assert_includes progress, 'Загрузка обновления…'
+      assert_includes progress, 'Проверка контрольной суммы…'
+      assert_includes progress, 'Безопасная распаковка и проверка…'
+    ensure
+      Updater.define_singleton_method(:install_staged_package!, original_install) if original_install
+      Updater.define_singleton_method(:write_update_state, original_state) if original_state
+    end
+  end
+
+  def test_no_update_result_skips_download
+    http_get = ->(*) { flunk 'cancelled update must not download files' }
+    result = Updater.download_and_apply_update(update: { 'available' => false }, http_get: http_get)
+
+    assert_equal false, result.fetch('success')
+    assert_match(/up to date/i, result.fetch('message'))
+  end
+
+  def test_download_error_is_reported_to_the_progress_callback
+    progress = []
+    update = {
+      'available' => true,
+      'latest_version' => '0.3.0',
+      'asset_name' => 'release.rbz',
+      'rbz_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/release.rbz',
+      'checksum_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.3.0/release.rbz.sha256'
+    }
+    http_get = ->(*) { Response.new('500', '') }
+
+    result = Updater.download_and_apply_update(update: update, http_get: http_get, on_status: ->(text) { progress << text })
+
+    refute result['success']
+    assert_match(/Download returned HTTP 500/, result.fetch('error'))
+    assert_includes progress, 'Загрузка обновления…'
+    assert_match(/Ошибка обновления/, progress.last)
+  end
 end

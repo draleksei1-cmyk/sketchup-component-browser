@@ -66,7 +66,7 @@ class StaticUiContractTest < Minitest::Test
 
   def test_canonical_svg_icons_and_toolbar_png_pairs_follow_the_icon_contract
     icon_dir = File.join(ROOT, 'component_library_browser', 'icons')
-    required = %w[open save brick window settings reset array folder pipette check cancel refresh more star close]
+    required = %w[open save brick window settings array folder pipette check cancel refresh more star close]
     required.each do |name|
       path = File.join(icon_dir, "#{name}.svg")
       assert File.file?(path), "missing canonical SVG #{name}.svg"
@@ -177,5 +177,45 @@ class StaticUiContractTest < Minitest::Test
     assert_match(/modeltab_save_to_library[^\n]+definition_guid/, js)
     assert_match(/save_in_model_definition/, main)
     assert_match(/parse_payload\(payload\).*?data\['definition_guid'\]/m, main)
+  end
+
+  def test_settings_command_opens_the_library_settings_dialog_and_only_change_root_opens_the_folder_picker
+    settings_start = main.index('def open_settings')
+    change_root_start = main.index('def change_library_root')
+    settings_method = main[settings_start, change_root_start - settings_start]
+    change_root_method = main[change_root_start, main.index('def create_new_library_root') - change_root_start]
+
+    assert_includes settings_method, 'open_library'
+    assert_includes settings_method, 'ComponentLibrary.openSettings'
+    refute_includes settings_method, 'choose_library_root'
+    assert_includes change_root_method, 'choose_library_root'
+    assert_match(/settings-change-root.*?ruby\("change_library_root"\)/m, js)
+    assert_match(/legacy-change-root.*?ruby\("change_library_root"\)/m, js)
+    assert_includes main, "add_action_callback('change_library_root')"
+  end
+
+  def test_reload_stays_in_extensions_menu_without_a_toolbar_icon
+    command_setup = main[main.index('def setup_commands'), main.index('def build_command') - main.index('def setup_commands')]
+    toolbar_setup = main[main.index('def setup_toolbar'), main.index('def close_live_plugin_sessions_before_reload') - main.index('def setup_toolbar')]
+    icon_dir = File.join(ROOT, 'component_library_browser', 'icons')
+
+    assert_includes command_setup, '@commands[:reload_plugin]'
+    refute_match(/@commands\[:reload_plugin\].*?icon_prefix:/m, command_setup)
+    assert_includes main, 'menu.add_item(@commands[:reload_plugin])'
+    refute_includes toolbar_setup, '@toolbar.add_item(@commands[:reload_plugin])'
+    refute File.exist?(File.join(icon_dir, 'reset_16.png'))
+    refute File.exist?(File.join(icon_dir, 'reset_24.png'))
+  end
+
+  def test_update_check_routes_available_versions_to_a_compact_confirm_dialog
+    assert_includes main, 'def show_update_dialog'
+    assert_includes main, "dialog.add_action_callback('install_update')"
+    assert_includes main, "dialog.add_action_callback('cancel_update')"
+    assert_match(/current_version.*latest_version/m, main)
+    cancel_callback = main[main.index("dialog.add_action_callback('cancel_update')"), main.index("dialog.add_action_callback('install_update')") - main.index("dialog.add_action_callback('cancel_update')")]
+    assert_includes cancel_callback, 'dialog.close'
+    refute_includes cancel_callback, 'download_and_apply_update'
+    assert_match(/download_and_apply_update\(update: update, on_status:/m, main)
+    assert_includes main, 'Обновление подготовлено. Требуется перезапуск SketchUp.'
   end
 end

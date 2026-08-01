@@ -187,6 +187,15 @@ module Drale
     end
 
     def open_settings
+      open_library
+      @dialog&.execute_script('window.ComponentLibrary && window.ComponentLibrary.openSettings();')
+      true
+    rescue StandardError => error
+      show_error("Настройки", error)
+      false
+    end
+
+    def change_library_root
       current_root = @storage ? @storage.lib_root : read_saved_root
       selected_root = choose_library_root(current_root)
       return unless selected_root
@@ -915,16 +924,7 @@ module Drale
 
     def check_updates
       result = Updater.check_for_updates
-      if result.nil?
-        UI.messagebox("Не удалось проверить обновления.\nПроверьте подключение к интернету.")
-      elsif result['available']
-        msg = "Доступно обновление: v#{result['current_version']} → v#{result['latest_version']}\n\nЗайдите в «Установить обновление...» для загрузки."
-        UI.messagebox(msg, MB_MULTILINE)
-      elsif result['error']
-        UI.messagebox("Ошибка: #{result['error']}")
-      else
-        UI.messagebox("Установлена последняя версия: v#{result['current_version']}")
-      end
+      show_update_dialog(result)
       true
     rescue StandardError => error
       show_error('Проверка обновлений', error)
@@ -932,18 +932,64 @@ module Drale
     end
 
     def apply_update_with_reload
-      confirmed = UI.messagebox(
-        "Будет скачана последняя версия с GitHub и установлена.\n" \
-        "Плагин перезагрузится автоматически.\n\n" \
-        "Продолжить?",
-        MB_YESNO
-      )
-      return false unless confirmed == 6
+      check_updates
+    end
 
-      Updater.apply_and_reload
+    def show_update_dialog(result)
+      result ||= { 'error' => 'Не удалось проверить обновления. Проверьте подключение к интернету.' }
+      available = !!result['available']
+      current_version = result['current_version'].to_s
+      latest_version = result['latest_version'].to_s
+      summary =
+        if result['error']
+          "Ошибка проверки: #{result['error']}"
+        elsif available
+          "Доступно обновление: v#{current_version} → v#{latest_version}"
+        else
+          "Установлена последняя версия: v#{current_version}"
+        end
+      update_button = available ? '<button class="primary" type="button" onclick="sketchup.install_update()">Обновить</button>' : ''
+      dialog = UI::HtmlDialog.new(
+        dialog_title: 'Обновление Component Library Browser', preferences_key: 'DraleComponentLibraryBrowserUpdate',
+        style: UI::HtmlDialog::STYLE_DIALOG, resizable: false, width: 390, height: 180
+      )
+      dialog.set_html(<<~HTML)
+        <!doctype html><meta charset="utf-8"><style>body{margin:0;padding:20px;font:13px/1.45 Segoe UI,Arial;color:#20242b;background:#fff}p{margin:0 0 14px}#update-status{min-height:20px;color:#5a6470}.actions{display:flex;justify-content:flex-end;gap:8px}button{padding:7px 14px;border:1px solid #c9ced6;border-radius:5px;background:#fff}button.primary{background:#2463eb;color:#fff;border-color:#2463eb}</style><p>#{CGI.escapeHTML(summary)}</p><p id="update-status"></p><div class="actions">#{update_button}<button type="button" onclick="sketchup.cancel_update()">Отмена</button></div>
+      HTML
+      dialog.add_action_callback('cancel_update') { dialog.close; @update_dialog = nil }
+      dialog.add_action_callback('install_update') do
+        next unless available
+
+        dialog.execute_script("document.getElementById('update-status').textContent='Подготовка обновления…';")
+        schedule_update_install(dialog, result)
+      end
+      @update_dialog = dialog
+      dialog.show
+    end
+
+    def schedule_update_install(dialog, update)
+      UI.start_timer(0, false) { install_update_from_dialog(dialog, update) }
+    rescue StandardError
+      install_update_from_dialog(dialog, update)
+    end
+
+    def install_update_from_dialog(dialog, update)
+      result = Updater.download_and_apply_update(update: update, on_status: ->(text) { set_update_dialog_status(dialog, text) })
+      if result['success']
+        set_update_dialog_status(dialog, 'Обновление установлено. Перезагрузка плагина…')
+        Updater.send(:reload_plugin!)
+      elsif result['restart_required']
+        set_update_dialog_status(dialog, 'Обновление подготовлено. Требуется перезапуск SketchUp.')
+      else
+        set_update_dialog_status(dialog, "Ошибка обновления: #{result['error'] || result['message']}")
+      end
     rescue StandardError => error
-      show_error('Установка обновления', error)
-      false
+      set_update_dialog_status(dialog, "Ошибка обновления: #{error.message}")
+    end
+
+    def set_update_dialog_status(dialog, text)
+      escaped = JSON.generate(text.to_s)
+      dialog.execute_script("var s=document.getElementById('update-status');if(s)s.textContent=#{escaped};")
     end
 
     def schedule_background_update_check
@@ -1665,8 +1711,7 @@ module Drale
 @commands[:reload_plugin] = build_command(
         menu_text: 'Перезагрузить плагин',
         tooltip: 'Перезагрузить Component Library Browser без перезапуска SketchUp',
-        status: 'Перезагрузить Ruby-код плагина Component Library Browser.',
-        icon_prefix: 'reset'
+        status: 'Перезагрузить Ruby-код плагина Component Library Browser.'
       ) { reload_plugin! }
 
       @commands[:check_updates] = build_command(
@@ -1726,7 +1771,6 @@ menu.add_item(@commands[:open_log])
       @toolbar.add_item(@commands[:save])
       @toolbar.add_item(@commands[:array])
       @toolbar.add_item(@commands[:win_array])
-      @toolbar.add_item(@commands[:reload_plugin])
       @toolbar.restore
     end
 
@@ -2200,6 +2244,10 @@ menu.add_item(@commands[:open_log])
 
       dialog.add_action_callback('open_settings') do |_action_context, _payload|
         open_settings
+      end
+
+      dialog.add_action_callback('change_library_root') do |_action_context, _payload|
+        change_library_root
       end
 
       dialog.add_action_callback('create_new_library_root') do |_action_context, _payload|
