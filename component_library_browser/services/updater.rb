@@ -344,7 +344,8 @@ module Drale
           try {
             foreach ($entry in $archive.Entries) {
               $name = $entry.FullName
-              if ([IO.Path]::IsPathRooted($name) -or $name -match '(^|[\\/])\.\.([\\/]|$)' -or $name -match '^[A-Za-z]:') { throw "Unsafe RBZ path: $name" }
+              $normalized = $name.Replace([char]92, [char]47)
+              if ([IO.Path]::IsPathRooted($name) -or $normalized.Split('/') -contains '..' -or $name -match '^[A-Za-z]:') { throw "Unsafe RBZ path: $name" }
             }
           } finally { $archive.Dispose() }
           [System.IO.Compression.ZipFile]::ExtractToDirectory(#{archive}, #{target})

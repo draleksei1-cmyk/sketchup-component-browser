@@ -5,6 +5,7 @@ require 'json'
 require 'tmpdir'
 require 'fileutils'
 require 'digest'
+require 'open3'
 
 module Drale
   module ComponentLibraryBrowser
@@ -195,6 +196,46 @@ class UpdaterContractTest < Minitest::Test
 
       assert result['retry_required']
       assert File.exist?(manifest)
+    end
+  end
+
+  def test_extracts_a_safe_rbz_with_the_real_release_ui_directory_layout
+    Dir.mktmpdir('updater-release-layout-') do |dir|
+      output = File.join(dir, 'dist')
+      script = File.expand_path('../scripts/build_rbz.ps1', __dir__)
+      stdout, stderr, status = Open3.capture3(
+        'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+        '-OutputDirectory', output, '-SelfTest'
+      )
+      assert status.success?, "RBZ fixture build failed:\n#{stdout}\n#{stderr}"
+
+      rbz = File.join(output, 'component-library-browser-0.2.1.rbz')
+      stage = File.join(dir, 'staged')
+      Updater.send(:extract_rbz!, rbz, stage)
+
+      validated = Updater.validate_staged_package!(stage, expected_version: '0.2.1')
+      assert_equal '0.2.1', validated.fetch('version')
+      assert File.file?(File.join(stage, 'component_library_browser', 'ui', 'app.js'))
+    end
+  end
+
+  def test_rejects_a_backslash_parent_path_before_extracting
+    Dir.mktmpdir('updater-unsafe-path-') do |dir|
+      rbz = File.join(dir, 'unsafe.rbz')
+      quoted_rbz = rbz.gsub("'", "''")
+      script = <<~POWERSHELL
+        Add-Type -AssemblyName System.IO.Compression
+        $stream = [IO.File]::Open('#{quoted_rbz}', [IO.FileMode]::CreateNew)
+        try {
+          $zip = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Create, $false)
+          try { $zip.CreateEntry('component_library_browser\\..\\escape.txt').Open().Dispose() } finally { $zip.Dispose() }
+        } finally { $stream.Dispose() }
+      POWERSHELL
+      _stdout, stderr, status = Open3.capture3('powershell', '-NoProfile', '-NonInteractive', '-Command', script)
+      assert status.success?, stderr
+
+      error = assert_raises(Updater::VerificationError) { Updater.send(:extract_rbz!, rbz, File.join(dir, 'staged')) }
+      assert_match(/safe RBZ archive/i, error.message)
     end
   end
 end
