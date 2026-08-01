@@ -1,6 +1,7 @@
 ﻿require 'json'
 
 require 'securerandom'
+require_relative '../tools/brick_layout_tool'
 
 module Drale
   module ComponentLibraryBrowser
@@ -28,7 +29,13 @@ module Drale
           @session_active = false
           @closing = false
           @non_cutting_warning_shown = false
-          @params = normalize_params(default_params)
+          session_params =
+            if @host.respond_to?(:read_brick_layout_session_params)
+              @host.read_brick_layout_session_params
+            elsif @host.respond_to?(:read_array_session_params)
+              @host.read_array_session_params
+            end
+          @params = normalize_params(session_params || default_params)
           merge_insert_defaults!
           @params = normalize_params(@params)
         end
@@ -141,6 +148,7 @@ module Drale
           data = parse_payload(payload)
           previous_auto = !!@params['auto_step']
           @params = normalize_params(@params.merge(data))
+          persist_session_params
           @array_tool&.update_params(tool_params_for_array_tool)
           if previous_auto && !@params['auto_step']
             sync_steps_from_current_auto!
@@ -278,7 +286,7 @@ module Drale
         def ensure_tool!
           return @array_tool if @array_tool
 
-          @array_tool = Tools::ArrayTool.new(self)
+          @array_tool = Tools::BrickLayoutTool.new(self)
           @array_tool.update_params(tool_params_for_array_tool)
           @array_tool.set_source(@source_definition, cache: @preview_cache, bbox_x: @source_bbox_x, bbox_y: @source_bbox_y) if source_ready?
           @array_tool
@@ -381,6 +389,16 @@ module Drale
           @params.dup
         rescue StandardError
           @params
+        end
+
+        def persist_session_params
+          if @host.respond_to?(:write_brick_layout_session_params)
+            @host.write_brick_layout_session_params(@params)
+          elsif @host.respond_to?(:write_array_session_params)
+            @host.write_array_session_params(@params)
+          end
+        rescue StandardError
+          nil
         end
 
         def normalize_brick_rotation(value)

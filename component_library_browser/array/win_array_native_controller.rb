@@ -1,5 +1,6 @@
 require 'json'
 require 'securerandom'
+require_relative '../tools/window_layout_tool'
 
 module Drale
   module ComponentLibraryBrowser
@@ -321,7 +322,7 @@ module Drale
         def ensure_tool!
           return @tool if @tool
 
-          @tool = Tools::ArrayTool.new(self)
+          @tool = Tools::WindowLayoutTool.new(self)
           @tool.update_params(tool_params_for_array_tool)
           if source_ready?
             @tool.set_source(
@@ -795,7 +796,7 @@ module Drale
 
         def tool_params_for_array_tool
           {
-            'mode' => 'windows_native_copy',
+            'mode' => 'windows',
             'brick_bond' => 'stack',
             'brick_layout_rotation_deg' => 0,
             'brick_rotation_deg' => 0,

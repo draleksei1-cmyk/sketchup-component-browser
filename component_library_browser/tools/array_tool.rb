@@ -1,4 +1,5 @@
 require_relative 'window_placement'
+require_relative 'layout_geometry'
 
 module Drale
   module ComponentLibraryBrowser
@@ -10,7 +11,10 @@ module Drale
         R_KEY_DOWN = 114
         EPS = 1.0e-6
 
-        def initialize(controller)
+        attr_reader :layout_kind
+
+        def initialize(controller, layout_kind = 'brick')
+          @layout_kind = normalize_layout_kind(layout_kind)
           @controller = controller
           @input_point = Sketchup::InputPoint.new
           @hover_point = ORIGIN
@@ -51,7 +55,7 @@ module Drale
 
         def activate
           @controller.update_status_prompt
-          debug_log('array_tool_activated', { 'version_marker' => 'camera_normal_fix_v2', 'mode' => @params['mode'].to_s })
+          debug_log('array_tool_activated', { 'version_marker' => 'camera_normal_fix_v2', 'layout_kind' => @layout_kind })
         end
 
         def deactivate(_view)
@@ -432,7 +436,7 @@ module Drale
           target = @hover_target.is_a?(Hash) ? @hover_target : @last_valid_hover_target
           frame = current_frame rescue nil
           {
-            'mode' => @params['mode'].to_s,
+            'layout_kind' => @layout_kind,
             'input_valid' => !!@input_point.valid?,
             'hover_valid' => !!@hover_valid,
             'hover_has_face' => !!@hover_has_face,
@@ -476,6 +480,13 @@ module Drale
         end
 
         private
+
+        def normalize_layout_kind(layout_kind)
+          kind = layout_kind.to_s
+          raise ArgumentError, "Unsupported layout kind: #{kind}" unless %w[brick windows].include?(kind)
+
+          kind.freeze
+        end
 
         def empty_preview_cache
           {
@@ -672,10 +683,9 @@ module Drale
           v_axis = frame[:v_axis]
           layout_v_axis = frame[:layout_v_axis] || v_axis
           normal = frame[:normal]
-          mode = @params['mode'].to_s
           bond = @params['brick_bond'].to_s
-          brick_rotation = brick_rotation_radians(mode)
-          random_quadrant = mode == 'brick' && !!@params['random_quadrant']
+          brick_rotation = brick_rotation_radians
+          random_quadrant = brick_layout? && !!@params['random_quadrant']
           comp_u_axis = u_axis
           comp_v_axis = v_axis
           if brick_rotation.abs > EPS
@@ -687,10 +697,14 @@ module Drale
           transforms = []
           scale = Geom::Transformation.scaling(@source_scale_x, @source_scale_y, @source_scale_z)
           count_y.times do |row|
-            shift_factor = mode == 'brick' ? row_shift_factor(row, bond) : 0.0
             count_x.times do |col|
-              dx = (col + shift_factor) * pitch_x
-              dy = row * pitch_y
+              dx, dy = LayoutGeometry.grid_offsets(
+                column: col,
+                row: row,
+                pitch_x: pitch_x,
+                pitch_y: pitch_y,
+                bond: brick_layout? ? bond : nil
+              )
               point = origin.offset(layout_u_axis, dx).offset(layout_v_axis, dy)
               inst_u = comp_u_axis
               inst_v = comp_v_axis
@@ -787,20 +801,8 @@ module Drale
           [@source_bbox_x.to_f, base_y]
         end
 
-        def row_shift_factor(row, bond)
-          case bond
-          when 'half'
-            row.odd? ? 0.5 : 0.0
-          when 'third'
-            offsets = [1.0 / 3.0, 2.0 / 3.0, 0.0]
-            offsets[row % 3]
-          else
-            0.0
-          end
-        end
-
-        def brick_rotation_radians(mode)
-          return 0.0 unless mode.to_s == 'brick'
+        def brick_rotation_radians
+          return 0.0 unless brick_layout?
 
           deg = @params['brick_rotation_deg'].to_i
           return 0.0 unless [0, 90, 180, 270].include?(deg)
@@ -811,9 +813,9 @@ module Drale
         end
 
         def rotated_corners_for_brick(corners)
-          return corners unless @params['mode'].to_s == 'brick'
+          return corners unless brick_layout?
 
-          angle = brick_rotation_radians('brick')
+          angle = brick_rotation_radians
           return corners if angle.abs <= EPS
 
           local_rot = Geom::Transformation.rotation(ORIGIN, Z_AXIS, angle)
@@ -823,7 +825,7 @@ module Drale
         end
 
         def remap_corners_for_windows(corners)
-          return corners unless @params['mode'].to_s == 'windows'
+          return corners unless windows_mode?
           return corners unless source_window_x_is_vertical?
 
           corners.map { |pt| Geom::Point3d.new(pt.y, pt.x, pt.z) }
@@ -832,7 +834,7 @@ module Drale
         end
 
         def layout_rotation_radians
-          return 0.0 unless @params['mode'].to_s == 'brick'
+          return 0.0 unless brick_layout?
 
           deg = @params['brick_layout_rotation_deg'].to_i
           return 0.0 unless [0, 90, 180, 270].include?(deg)
@@ -923,7 +925,7 @@ module Drale
         end
 
         def preview_colors
-          if @params['mode'].to_s == 'brick'
+          if brick_layout?
             {
               fill: Sketchup::Color.new(222, 140, 68, 86),
               line: Sketchup::Color.new(161, 88, 24)
@@ -1034,7 +1036,11 @@ module Drale
         end
 
         def windows_mode?
-          @params['mode'].to_s == 'windows'
+          @layout_kind == 'windows'
+        end
+
+        def brick_layout?
+          @layout_kind == 'brick'
         end
 
         # Compatibility name for the existing placement helpers. There is one
@@ -2025,7 +2031,7 @@ module Drale
 
         def debug_hover_state(event_name, x:, y:)
           signature = [
-            windows_mode? ? 'windows' : @params['mode'].to_s,
+            @layout_kind,
             @hover_valid ? 1 : 0,
             @hover_has_face ? 1 : 0,
             @hover_face && @hover_face.valid? ? persistent_id_for(@hover_face) : 0,

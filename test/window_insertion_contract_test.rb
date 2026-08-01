@@ -115,6 +115,9 @@ Y_AXIS = Geom::Vector3d.new(0, 1, 0) unless defined?(Y_AXIS)
 Z_AXIS = Geom::Vector3d.new(0, 0, 1) unless defined?(Z_AXIS)
 
 module Sketchup
+  class InputPoint
+  end
+
   class Face
     attr_reader :normal
 
@@ -142,11 +145,103 @@ module Sketchup
 end
 
 require_relative '../component_library_browser/tools/window_placement'
+require_relative '../component_library_browser/tools/layout_geometry'
 require_relative '../component_library_browser/tools/array_tool'
+require_relative '../component_library_browser/tools/brick_layout_tool'
+require_relative '../component_library_browser/tools/window_layout_tool'
+require_relative '../component_library_browser/array/array_controller'
 require_relative '../component_library_browser/array/win_array_controller'
 
 class WindowInsertionContractTest < Minitest::Test
   ROOT = File.expand_path('..', __dir__)
+
+  def test_layout_geometry_is_pure_and_calculates_grid_offsets_without_a_mode
+    geometry_source = File.read(
+      File.join(ROOT, 'component_library_browser', 'tools', 'layout_geometry.rb'),
+      encoding: 'UTF-8'
+    )
+
+    refute_match(/Sketchup|\bUI\b|@controller|@params|\bmode\b/, geometry_source)
+    assert_equal 0.5, Drale::ComponentLibraryBrowser::Tools::LayoutGeometry.row_shift_factor(1, 'half')
+    assert_in_delta 2.0 / 3.0, Drale::ComponentLibraryBrowser::Tools::LayoutGeometry.row_shift_factor(1, 'third'), 1.0e-12
+    assert_equal [25.0, 7.0], Drale::ComponentLibraryBrowser::Tools::LayoutGeometry.grid_offsets(
+      column: 2,
+      row: 1,
+      pitch_x: 10.0,
+      pitch_y: 7.0,
+      bond: 'half'
+    )
+  end
+
+  def test_array_tool_uses_its_immutable_layout_kind_instead_of_params_mode
+    source = File.read(
+      File.join(ROOT, 'component_library_browser', 'tools', 'array_tool.rb'),
+      encoding: 'UTF-8'
+    )
+
+    assert_includes source, 'def brick_layout?'
+    assert_includes source, 'LayoutGeometry.grid_offsets'
+    refute_includes source, "@params['mode']"
+  end
+
+  def test_public_layout_tools_keep_their_layout_kind_when_params_request_another_mode
+    brick_tool = Drale::ComponentLibraryBrowser::Tools::BrickLayoutTool.new(Object.new)
+    window_tool = Drale::ComponentLibraryBrowser::Tools::WindowLayoutTool.new(Object.new)
+
+    brick_tool.update_params('mode' => 'windows')
+    window_tool.update_params('mode' => 'brick')
+
+    assert_equal 'brick', brick_tool.layout_kind
+    assert_equal 'brick', brick_tool.instance_variable_get(:@params)['mode']
+    assert_equal 'windows', window_tool.layout_kind
+    assert_equal 'windows', window_tool.instance_variable_get(:@params)['mode']
+  end
+
+  def test_each_layout_controller_constructs_only_its_public_layout_tool
+    brick_controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'array_controller.rb'), encoding: 'UTF-8')
+    window_controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'win_array_controller.rb'), encoding: 'UTF-8')
+    native_window_controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'win_array_native_controller.rb'), encoding: 'UTF-8')
+
+    assert_includes brick_controller, 'Tools::BrickLayoutTool.new(self)'
+    refute_includes brick_controller, 'Tools::WindowLayoutTool.new(self)'
+    assert_includes window_controller, 'Tools::WindowLayoutTool.new(self)'
+    refute_includes window_controller, 'Tools::BrickLayoutTool.new(self)'
+    assert_includes native_window_controller, 'Tools::WindowLayoutTool.new(self)'
+    refute_includes native_window_controller, 'Tools::BrickLayoutTool.new(self)'
+    refute_includes [brick_controller, window_controller, native_window_controller].join("\n"), 'Tools::ArrayTool.new(self)'
+  end
+
+  def test_layout_sessions_use_separate_brick_and_window_namespaces
+    brick_controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'array_controller.rb'), encoding: 'UTF-8')
+    window_controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'win_array_controller.rb'), encoding: 'UTF-8')
+    main = File.read(File.join(ROOT, 'component_library_browser', 'main.rb'), encoding: 'UTF-8')
+
+    assert_includes brick_controller, 'read_brick_layout_session_params'
+    assert_includes brick_controller, 'write_brick_layout_session_params'
+    assert_includes window_controller, 'read_window_layout_session_params'
+    assert_includes window_controller, 'write_window_layout_session_params'
+    assert_match(/def read_brick_layout_session_params/, main)
+    assert_match(/def read_window_layout_session_params/, main)
+  end
+
+  def test_main_exposes_one_menu_and_toolbar_command_for_each_public_layout_tool
+    main = File.read(File.join(ROOT, 'component_library_browser', 'main.rb'), encoding: 'UTF-8')
+
+    assert_equal 1, main.scan(/menu\.add_item\(@commands\[:array\]\)/).length
+    assert_equal 1, main.scan(/menu\.add_item\(@commands\[:win_array\]\)/).length
+    assert_equal 1, main.scan(/@toolbar\.add_item\(@commands\[:array\]\)/).length
+    assert_equal 1, main.scan(/@toolbar\.add_item\(@commands\[:win_array\]\)/).length
+  end
+
+  def test_production_source_has_no_windows_native_copy_mode
+    production_sources = Dir.glob(File.join(ROOT, 'component_library_browser', '**', '*.rb')).reject do |path|
+      path.include?(File.join('component_library_browser', 'runtime_state'))
+    end
+
+    production_sources.each do |path|
+      refute_includes File.read(path, encoding: 'UTF-8'), 'windows_native_copy', path
+    end
+  end
 
   def test_local_front_is_flipped_only_when_it_faces_away_from_host
     host_normal = Geom::Vector3d.new(0, 1, 0)
@@ -221,7 +316,8 @@ class WindowInsertionContractTest < Minitest::Test
 
     target_frame = Geom::Transformation.axes(Geom::Point3d.new(-4, 7, 3), X_AXIS, Y_AXIS, Z_AXIS)
     tool = Drale::ComponentLibraryBrowser::Tools::ArrayTool.allocate
-    tool.instance_variable_set(:@params, { 'mode' => 'windows' })
+    tool.instance_variable_set(:@layout_kind, 'windows')
+    tool.instance_variable_set(:@params, {})
     tool.instance_variable_set(:@source_window_prototype_state, state)
     placed = tool.send(:base_transform_from_source_window_prototype_state, target_frame, ORIGIN)
 

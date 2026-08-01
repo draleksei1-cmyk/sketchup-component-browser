@@ -10,6 +10,10 @@ require_relative 'fs'
 require_relative 'storage'
 require_relative 'logger'
 require_relative 'compat'
+require_relative 'tools/layout_geometry'
+require_relative 'tools/array_tool'
+require_relative 'tools/brick_layout_tool'
+require_relative 'tools/window_layout_tool'
 require_relative 'array/array_controller'
 require_relative 'array/win_array_controller'
 require_relative 'services/model_definitions'
@@ -17,7 +21,6 @@ require_relative 'services/replacer'
 require_relative 'services/metadata'
 require_relative 'services/preview_regenerator'
 require_relative 'services/pack_transfer'
-require_relative 'tools/array_tool'
 require_relative 'tools/pick_source_tool'
 require_relative 'services/updater'
 
@@ -794,8 +797,8 @@ module Drale
       false
     end
 
-    def read_win_array_session_params
-      data = @win_array_session_params
+    def read_brick_layout_session_params
+      data = @brick_layout_session_params
       return nil unless data.is_a?(Hash)
 
       data.dup
@@ -803,9 +806,33 @@ module Drale
       nil
     end
 
-    def write_win_array_session_params(params)
+    def write_brick_layout_session_params(params)
+      @brick_layout_session_params = params.is_a?(Hash) ? params.dup : {}
+      true
+    rescue StandardError
+      false
+    end
+
+    def read_array_session_params
+      read_brick_layout_session_params
+    end
+
+    def write_array_session_params(params)
+      write_brick_layout_session_params(params)
+    end
+
+    def read_window_layout_session_params
+      data = @window_layout_session_params
+      return nil unless data.is_a?(Hash)
+
+      data.dup
+    rescue StandardError
+      nil
+    end
+
+    def write_window_layout_session_params(params)
       data = params.is_a?(Hash) ? params : {}
-      @win_array_session_params = {
+      @window_layout_session_params = {
         'count_x' => data['count_x'].to_i,
         'count_y' => data['count_y'].to_i,
         'axis_spacing_mm' => data['axis_spacing_mm'].to_f,
@@ -814,6 +841,14 @@ module Drale
       true
     rescue StandardError
       false
+    end
+
+    def read_win_array_session_params
+      read_window_layout_session_params
+    end
+
+    def write_win_array_session_params(params)
+      write_window_layout_session_params(params)
     end
 
     def reload_plugin!
@@ -832,8 +867,11 @@ reload_paths = [
         'services/pack_transfer.rb',
         'services/updater.rb',
         'tools/pick_source_tool.rb',
+        'tools/layout_geometry.rb',
         'tools/array_tool.rb',
         'tools/window_placement.rb',
+        'tools/brick_layout_tool.rb',
+        'tools/window_layout_tool.rb',
         'array/array_controller.rb',
         'array/win_array_controller.rb',
         'main.rb'

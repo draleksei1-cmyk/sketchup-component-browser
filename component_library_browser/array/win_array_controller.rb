@@ -1,5 +1,6 @@
 require 'json'
 require 'securerandom'
+require_relative '../tools/window_layout_tool'
 
 module Drale
   module ComponentLibraryBrowser
@@ -27,7 +28,9 @@ module Drale
           @source_scale_z = 1.0
           @preview_cache = empty_preview_cache
           session_params =
-            if @host.respond_to?(:read_win_array_session_params)
+            if @host.respond_to?(:read_window_layout_session_params)
+              @host.read_window_layout_session_params
+            elsif @host.respond_to?(:read_win_array_session_params)
               @host.read_win_array_session_params
             end
           @params = normalize_params(session_params || default_params)
@@ -316,7 +319,7 @@ module Drale
         def ensure_tool!
           return @tool if @tool
 
-          @tool = Tools::ArrayTool.new(self)
+          @tool = Tools::WindowLayoutTool.new(self)
           @tool.update_params(tool_params_for_array_tool)
           if source_ready?
             @tool.set_source(
@@ -889,9 +892,12 @@ module Drale
         end
 
         def persist_session_params
-          return unless @host.respond_to?(:write_win_array_session_params)
-
-          @host.write_win_array_session_params(session_params_for_storage(@params))
+          params = session_params_for_storage(@params)
+          if @host.respond_to?(:write_window_layout_session_params)
+            @host.write_window_layout_session_params(params)
+          elsif @host.respond_to?(:write_win_array_session_params)
+            @host.write_win_array_session_params(params)
+          end
         rescue StandardError
           nil
         end
