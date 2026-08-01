@@ -991,11 +991,18 @@ module Drale
         set_update_dialog_status(dialog, 'Обновление подготовлено. Требуется перезапуск SketchUp.')
       else
         set_update_dialog_status(dialog, "Ошибка обновления: #{result['error'] || result['message']}")
+        restore_update_dialog_controls(dialog)
       end
     rescue StandardError => error
       set_update_dialog_status(dialog, "Ошибка обновления: #{error.message}")
-    ensure
+      restore_update_dialog_controls(dialog)
+    end
+
+    def restore_update_dialog_controls(dialog)
       @update_installing = false
+      dialog.execute_script("document.getElementById('update-confirm').disabled=false;document.getElementById('update-cancel').disabled=false;")
+    rescue StandardError
+      # A closed update dialog needs no retry controls.
     end
 
     def set_update_dialog_status(dialog, text)

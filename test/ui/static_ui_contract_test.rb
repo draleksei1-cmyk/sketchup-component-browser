@@ -242,4 +242,19 @@ class StaticUiContractTest < Minitest::Test
     cancel_callback = main[main.index("dialog.add_action_callback('cancel_update')"), main.index("dialog.add_action_callback('install_update')") - main.index("dialog.add_action_callback('cancel_update')")]
     assert_includes cancel_callback, 'next if @update_installing'
   end
+
+  def test_update_error_restores_controls_for_retry_without_unlocking_success_or_restart
+    install_start = main.index('def install_update_from_dialog')
+    install_end = main.index('def set_update_dialog_status')
+    install_method = main[install_start, install_end - install_start]
+
+    assert_includes install_method, 'restore_update_dialog_controls(dialog)'
+    assert_match(/else.*?restore_update_dialog_controls\(dialog\)/m, install_method)
+    assert_match(/rescue StandardError => error.*?restore_update_dialog_controls\(dialog\)/m, install_method)
+    assert_match(/def restore_update_dialog_controls.*?@update_installing = false.*?update-confirm'\)\.disabled=false.*?update-cancel'\)\.disabled=false/m, main)
+    success_branch = install_method[install_method.index("if result['success']"), install_method.index("elsif result['restart_required']") - install_method.index("if result['success']")]
+    restart_branch = install_method[install_method.index("elsif result['restart_required']"), install_method.index("else\n", install_method.index("elsif result['restart_required']")) - install_method.index("elsif result['restart_required']")]
+    refute_includes success_branch, 'restore_update_dialog_controls'
+    refute_includes restart_branch, 'restore_update_dialog_controls'
+  end
 end
