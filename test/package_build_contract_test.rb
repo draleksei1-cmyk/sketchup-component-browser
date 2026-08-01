@@ -16,7 +16,7 @@ class PackageBuildContractTest < Minitest::Test
       )
       assert status.success?, "RBZ build failed:\n#{stdout}\n#{stderr}"
 
-      rbz = File.join(output, 'component-library-browser-0.2.1.rbz')
+      rbz = File.join(output, 'component-library-browser-0.2.2.rbz')
       manifest = "#{rbz}.sha256"
       assert File.file?(rbz), 'versioned RBZ missing'
       assert File.file?(manifest), 'SHA256 manifest missing'
