@@ -134,6 +134,24 @@ class FlatStorageTest < Minitest::Test
     end
   end
 
+  def test_duplicate_display_names_remain_uuid_addressed_when_optional_object_metadata_is_absent_or_present
+    with_root do |root|
+      second_id = '22222222-2222-2222-2222-222222222222'
+      write_asset(root, ID)
+      FileUtils.mkdir_p(File.join(root, 'assets'))
+      File.binwrite(File.join(root, "assets/#{second_id}.skp"), 'model')
+      File.binwrite(File.join(root, "assets/#{second_id}.png"), 'preview')
+      File.write(
+        File.join(root, "assets/#{second_id}.json"),
+        JSON.pretty_generate(manifest(second_id, name: 'Door').merge('object' => 'Facade'))
+      )
+
+      items = Storage.new(root).index.fetch('items')
+      assert_equal [ID, second_id].sort, items.map { |item| item.fetch('id') }.sort
+      assert_equal ['Door', 'Door'], items.map { |item| item.fetch('name') }.sort
+    end
+  end
+
   def test_legacy_index_takes_priority_over_valid_flat_assets_without_writes
     with_root do |root|
       File.write(File.join(root, 'library_index.json'), '{"version":3,"items":[]}')

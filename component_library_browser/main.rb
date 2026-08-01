@@ -688,6 +688,20 @@ module Drale
       start_brush_item(item_id)
     end
 
+    # The native SketchUp component tool owns the canvas Esc event. The dialog
+    # calls this same path when it owns keyboard focus.
+    def cancel_native_brush
+      return false unless @native_brush_loop
+
+      model = Sketchup.active_model
+      model.select_tool(nil) if model
+      stop_native_brush_loop
+      true
+    rescue StandardError
+      stop_native_brush_loop if @native_brush_loop
+      false
+    end
+
     def replace_selection(item_id)
       replace_selection_with_library_item(item_id)
     end
@@ -1290,9 +1304,8 @@ module Drale
           idle_after_place > 0.9 && idle_after_insert > 0.5
         end
 
-      if !component_tool_active && should_stop
-        stop_native_brush_loop
-      end
+      return stop_native_brush_loop unless component_tool_active
+      stop_native_brush_loop if should_stop
     rescue StandardError
       stop_native_brush_loop
     end
@@ -1347,6 +1360,7 @@ module Drale
       stop_native_brush_restart_timer
       stop_native_brush_watchdog
       finalize_native_insert_usage(loop_state)
+      Sketchup.status_text = '' if clear_status
       if loop_state && !loop_state[:used]
         Logger.info(
           'Цикл вставки остановлен без размещения',
@@ -1364,6 +1378,7 @@ module Drale
       stop_native_brush_restart_timer
       stop_native_brush_watchdog
       finalize_native_insert_usage(loop_state)
+      Sketchup.status_text = '' if clear_status
       push_status_to_dialog('') if clear_status
     end
 
@@ -2088,6 +2103,10 @@ menu.add_item(@commands[:open_log])
         start_brush_item(item_id)
       end
 
+      dialog.add_action_callback('cancel_native_brush') do |_action_context, _payload|
+        cancel_native_brush
+      end
+
       dialog.add_action_callback('start_brush') do |_action_context, item_id|
         start_brush(item_id)
       end
@@ -2530,6 +2549,7 @@ menu.add_item(@commands[:open_log])
         'array_pick_mode' => !!@array_library_pick_mode,
         'array_pick_message' => @array_library_pick_message.to_s,
         'array_tool_active' => !!@array_tool_active,
+        'native_brush_active' => !!@native_brush_loop,
         'selection_state' => build_selection_state
       }
     end

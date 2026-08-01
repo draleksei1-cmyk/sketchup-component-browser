@@ -73,6 +73,9 @@
       if (!callbacks.some(function (entry) { return entry.name === "import_pack"; })) throw new Error("overflow import callback missing");
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       if (!document.getElementById("library-overflow-menu").hidden || document.activeElement !== overflow) throw new Error("Escape did not close overflow menu");
+      window.ComponentLibrary.setState(Object.assign({}, window.__clbFixture, { native_brush_active: true, status_text: "Многократная вставка активна" }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      if (!callbacks.some(function (entry) { return entry.name === "cancel_native_brush"; })) throw new Error("Escape did not cancel native brush through Ruby callback");
       var arrayState = Object.assign({}, window.__clbFixture, { array_pick_mode: true, array_pick_message: "Выберите источник для массива" });
       window.ComponentLibrary.setState(arrayState);
       if (document.getElementById("array-pick-banner").hidden) throw new Error("array banner is hidden");

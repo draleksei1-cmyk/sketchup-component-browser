@@ -64,6 +64,13 @@ class StaticUiContractTest < Minitest::Test
     end
   end
 
+  def test_escape_routes_an_active_native_brush_to_its_single_ruby_cancel_callback
+    assert_includes js, 'state.native_brush_active'
+    assert_match(/event\.key==="Escape".*?ruby\("cancel_native_brush"\)/m, js)
+    assert_includes main, "dialog.add_action_callback('cancel_native_brush')"
+    assert_includes main, 'def cancel_native_brush'
+  end
+
   def test_canonical_svg_icons_and_toolbar_png_pairs_follow_the_icon_contract
     icon_dir = File.join(ROOT, 'component_library_browser', 'icons')
     required = %w[open save brick window settings array folder pipette check cancel refresh more star close]
