@@ -26,7 +26,11 @@ module Drale
           @source_scale_y = 1.0
           @source_scale_z = 1.0
           @preview_cache = empty_preview_cache
-          @params = default_params
+          session_params =
+            if @host.respond_to?(:read_win_array_session_params)
+              @host.read_win_array_session_params
+            end
+          @params = normalize_params(session_params || default_params)
           @session_active = false
           @closing = false
           @non_cutting_warning_shown = false
@@ -138,6 +142,7 @@ module Drale
         def update_params(payload = nil)
           data = parse_payload(payload)
           @params = normalize_params(@params.merge(data))
+          persist_session_params
           @tool&.update_params(tool_params_for_array_tool)
           push_palette_state
           invalidate_view
@@ -451,6 +456,8 @@ module Drale
           @source_bbox_y = plane_y.to_f
           @params['step_x_mm'] = length_to_mm(plane_x).round(2)
           @params['step_y_mm'] = length_to_mm(plane_y).round(2)
+          @params['axis_spacing_mm'] = @params['step_x_mm']
+          @params['floor_height_mm'] = @params['step_y_mm']
           @preview_cache = build_preview_cache(@source_definition)
 
           ensure_tool!
@@ -771,20 +778,33 @@ module Drale
 
         def normalize_params(raw)
           data = raw.is_a?(Hash) ? raw : {}
+          axis_spacing = normalize_float(data['axis_spacing_mm'], nil)
+          floor_height = normalize_float(data['floor_height_mm'], nil)
+          step_x = normalize_float(data['step_x_mm'], 1.0)
+          step_y = normalize_float(data['step_y_mm'], 1.0)
+          axis_spacing ||= step_x
+          floor_height ||= step_y
           {
             'count_x' => [[data['count_x'].to_i, 1].max, 500].min,
             'count_y' => [[data['count_y'].to_i, 1].max, 500].min,
-            'auto_step' => data.key?('auto_step') ? !!data['auto_step'] : true,
-            'step_x_mm' => normalize_float(data['step_x_mm'], 1.0),
-            'step_y_mm' => normalize_float(data['step_y_mm'], 1.0),
+            # The palette still submits the established names. They are the
+            # canonical array pitches, not discarded compatibility metadata.
+            'axis_spacing_mm' => axis_spacing,
+            'floor_height_mm' => floor_height,
+            'auto_step' => data.key?('auto_step') ? !!data['auto_step'] : false,
+            'step_x_mm' => axis_spacing,
+            'step_y_mm' => floor_height,
             'seam_x_mm' => normalize_float(data['seam_x_mm'], 0.0),
             'seam_y_mm' => normalize_float(data['seam_y_mm'], 0.0)
           }
         end
 
         def normalize_float(value, min_value)
+          return nil if value.nil? && min_value.nil?
+
           number = value.to_f
           return min_value unless number.finite?
+          return number.positive? ? number : nil if min_value.nil?
 
           number < min_value ? min_value : number
         rescue StandardError
@@ -818,9 +838,11 @@ module Drale
           {
             'count_x' => 1,
             'count_y' => 1,
-            'auto_step' => true,
-            'step_x_mm' => 1500.0,
-            'step_y_mm' => 1500.0,
+            'axis_spacing_mm' => 3300.0,
+            'floor_height_mm' => 3000.0,
+            'auto_step' => false,
+            'step_x_mm' => 3300.0,
+            'step_y_mm' => 3000.0,
             'seam_x_mm' => 0.0,
             'seam_y_mm' => 0.0
           }
@@ -837,6 +859,24 @@ module Drale
 
         def invalidate_view
           Sketchup.active_model&.active_view&.invalidate
+        rescue StandardError
+          nil
+        end
+
+        def session_params_for_storage(params)
+          data = params.is_a?(Hash) ? params : {}
+          {
+            'count_x' => data['count_x'].to_i,
+            'count_y' => data['count_y'].to_i,
+            'axis_spacing_mm' => data['axis_spacing_mm'].to_f,
+            'floor_height_mm' => data['floor_height_mm'].to_f
+          }
+        end
+
+        def persist_session_params
+          return unless @host.respond_to?(:write_win_array_session_params)
+
+          @host.write_win_array_session_params(session_params_for_storage(@params))
         rescue StandardError
           nil
         end

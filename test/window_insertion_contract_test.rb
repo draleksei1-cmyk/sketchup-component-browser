@@ -236,6 +236,48 @@ class WindowInsertionContractTest < Minitest::Test
     refute_match(/flip_world_transform/, controller)
     refute_match(/instance\.erase!/, controller)
   end
+
+  def test_legacy_palette_session_round_trips_into_canonical_steps_without_data_loss
+    controller = Drale::ComponentLibraryBrowser::ArrayLayout::WinArrayController.allocate
+    legacy = {
+      'count_x' => 4,
+      'count_y' => 2,
+      'axis_spacing_mm' => 3300.0,
+      'floor_height_mm' => 3000.0
+    }
+
+    canonical = controller.send(:normalize_params, legacy)
+    persisted = controller.send(:session_params_for_storage, canonical)
+
+    assert_equal 4, canonical['count_x']
+    assert_equal 2, canonical['count_y']
+    assert_equal 3300.0, canonical['axis_spacing_mm']
+    assert_equal 3000.0, canonical['floor_height_mm']
+    assert_equal 3300.0, canonical['step_x_mm']
+    assert_equal 3000.0, canonical['step_y_mm']
+    assert_equal legacy, persisted
+  end
+
+  def test_session_accessors_are_used_by_the_canonical_controller
+    controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'win_array_controller.rb'), encoding: 'UTF-8')
+
+    assert_includes controller, '@host.read_win_array_session_params'
+    assert_includes controller, '@host.write_win_array_session_params'
+
+    host = Object.new
+    saved = { 'count_x' => 3, 'count_y' => 5, 'axis_spacing_mm' => 1200.0, 'floor_height_mm' => 2800.0 }
+    written = nil
+    host.define_singleton_method(:read_win_array_session_params) { saved.dup }
+    host.define_singleton_method(:write_win_array_session_params) { |params| written = params }
+
+    instance = Drale::ComponentLibraryBrowser::ArrayLayout::WinArrayController.new(host)
+    params = instance.instance_variable_get(:@params)
+    assert_equal 1200.0, params['step_x_mm']
+    assert_equal 2800.0, params['step_y_mm']
+
+    instance.send(:persist_session_params)
+    assert_equal saved, written
+  end
 end
 
 WindowPlacementEpsilon = Drale::ComponentLibraryBrowser::Tools::WindowPlacement::SURFACE_EPSILON
