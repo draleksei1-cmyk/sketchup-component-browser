@@ -114,5 +114,6 @@ class StaticUiContractTest < Minitest::Test
     assert_includes html, 'Вставить'
     assert_includes html, 'data-action="select_all_model"'
     refute_match(/data-action=["']select_all_model["'][^>]*>Удалить</, html)
+    assert_match(/contextInsert\.textContent=modelItem \? "Сохранить в библиотеку" : "Вставить"/, js)
   end
 end
