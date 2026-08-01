@@ -12,7 +12,6 @@ require_relative 'logger'
 require_relative 'compat'
 require_relative 'array/array_controller'
 require_relative 'array/win_array_controller'
-require_relative 'array/win_array_native_controller'
 require_relative 'services/model_definitions'
 require_relative 'services/replacer'
 require_relative 'services/metadata'
@@ -788,21 +787,10 @@ module Drale
 
     def start_win_array_layout
       @array_controller&.cancel if @array_controller&.session_active?
-      @win_array_native_controller&.cancel if @win_array_native_controller&.session_active?
       @win_array_controller ||= ArrayLayout::WinArrayController.new(self)
       @win_array_controller.launch
     rescue StandardError => error
       show_error('Раскладка окон', error)
-      false
-    end
-
-    def start_win_array_native_layout
-      @array_controller&.cancel if @array_controller&.session_active?
-      @win_array_controller&.cancel if @win_array_controller&.session_active?
-      @win_array_native_controller ||= ArrayLayout::WinArrayNativeController.new(self)
-      @win_array_native_controller.launch
-    rescue StandardError => error
-      show_error('Раскладка окон (Native Copy)', error)
       false
     end
 
@@ -847,7 +835,6 @@ reload_paths = [
         'tools/array_tool.rb',
         'array/array_controller.rb',
         'array/win_array_controller.rb',
-        'array/win_array_native_controller.rb',
         'main.rb'
       ]
 
@@ -913,9 +900,6 @@ Sketchup.status_text = 'Component Library Browser перезагружен.'
       # Dispatch to whichever array tool is currently active.
       if @win_array_controller&.session_active?
         return @win_array_controller.pick_from_library(item_id)
-      end
-      if @win_array_native_controller&.session_active?
-        return @win_array_native_controller.pick_from_library(item_id)
       end
       return false unless @array_controller
 
@@ -1568,13 +1552,6 @@ Sketchup.status_text = 'Component Library Browser перезагружен.'
         icon_prefix: 'window'
       ) { start_win_array_layout }
 
-      @commands[:win_array_native] = build_command(
-        menu_text: 'Раскладка окон (Native Copy)...',
-        tooltip: 'Экспериментальная раскладка окон от нативной вставки SketchUp',
-        status: 'Запустить экспериментальный инструмент раскладки окон от нативной вставки.',
-        icon_prefix: 'window'
-      ) { start_win_array_native_layout }
-
       @commands[:array_select_layout] = build_command(
         menu_text: 'Выделить раскладку (по array_id)',
         tooltip: 'Выделить все элементы раскладки по выбранному объекту',
@@ -1658,7 +1635,6 @@ Sketchup.status_text = 'Component Library Browser перезагружен.'
       menu.add_item(@commands[:save])
       menu.add_item(@commands[:array])
       menu.add_item(@commands[:win_array])
-      menu.add_item(@commands[:win_array_native])
       menu.add_item(@commands[:array_select_layout])
       menu.add_item(@commands[:array_delete_layout])
       menu.add_item(@commands[:settings])
@@ -1683,7 +1659,6 @@ menu.add_item(@commands[:open_log])
       @toolbar.add_item(@commands[:save])
       @toolbar.add_item(@commands[:array])
       @toolbar.add_item(@commands[:win_array])
-      @toolbar.add_item(@commands[:win_array_native])
       @toolbar.add_item(@commands[:reload_plugin])
       @toolbar.restore
     end
@@ -1691,10 +1666,8 @@ menu.add_item(@commands[:open_log])
     def close_live_plugin_sessions_before_reload
       @array_controller&.cancel if @array_controller&.respond_to?(:cancel)
       @win_array_controller&.cancel if @win_array_controller&.respond_to?(:cancel)
-      @win_array_native_controller&.cancel if @win_array_native_controller&.respond_to?(:cancel)
       @array_controller = nil
       @win_array_controller = nil
-      @win_array_native_controller = nil
 
       if @dialog && @dialog.respond_to?(:close)
         @dialog.close
@@ -1703,7 +1676,6 @@ menu.add_item(@commands[:open_log])
     rescue StandardError
       @array_controller = nil
       @win_array_controller = nil
-      @win_array_native_controller = nil
       @dialog = nil
     end
 
@@ -2436,7 +2408,6 @@ menu.add_item(@commands[:open_log])
     def array_layout_active?
       return true if @array_tool_active
       return true if @win_array_controller&.session_active?
-      return true if @win_array_native_controller&.session_active?
 
       @array_controller && @array_controller.respond_to?(:session_active?) && @array_controller.session_active?
     rescue StandardError

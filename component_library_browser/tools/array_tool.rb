@@ -1,3 +1,5 @@
+require_relative 'window_placement'
+
 module Drale
   module ComponentLibraryBrowser
     module Tools
@@ -715,13 +717,14 @@ module Drale
                   tr = Geom::Transformation.translation(shift) * tr if shift
                   tr = tr * scale
                 end
+                tr = WindowPlacement.for_host(tr, normal)
               else
                 tr = Geom::Transformation.axes(point, inst_u, inst_v, normal)
                 tr = tr * Geom::Transformation.translation(@source_anchor_offset)
                 tr = tr * scale
               end
               # Log the first element transform only during apply (not preview) for comparison with manual insertion.
-              if transforms.empty? && mode == 'windows' && !preview
+              if transforms.empty? && windows_mode? && !preview
                 o = ORIGIN.transform(tr)
                 xu = X_AXIS.transform(tr)
                 yv = Y_AXIS.transform(tr)
@@ -1031,11 +1034,13 @@ module Drale
         end
 
         def windows_mode?
-          %w[windows windows_native_copy].include?(@params['mode'].to_s)
+          @params['mode'].to_s == 'windows'
         end
 
+        # Compatibility name for the existing placement helpers. There is one
+        # canonical window mode, and it always uses the native face-frame path.
         def native_copy_windows_mode?
-          @params['mode'].to_s == 'windows_native_copy'
+          windows_mode?
         end
 
         def native_window_component_axes(horizontal_axis, vertical_axis, normal_axis)
@@ -1424,17 +1429,11 @@ module Drale
           raw_normal = safe_vector(face.normal.transform(face_transform))
           return nil unless raw_normal
 
-          # Ensure the face normal points toward the camera/viewpoint.
-          # This handles reversed faces (front face pointing inward), which would cause
-          # a 180° placement error. SketchUp's native component insertion also places on
-          # the side the user is looking from, regardless of face orientation in the model.
-          normal =
-            if native_copy_windows_mode?
-              raw_normal
-            else
-              ensure_normal_toward_camera(raw_normal, point_world)
-            end
-          normal_was_flipped = normal.dot(raw_normal) < 0
+          # Placement is derived from the face itself, not the screen camera.
+          # A reversed face remains reversed so its gluing/cutting semantics are
+          # preserved; WindowPlacement performs the explicit component front test.
+          normal = raw_normal
+          normal_was_flipped = false
 
           layout_x_axis, layout_y_axis, _layout_z_axis =
             if native_copy_windows_mode?
@@ -1668,34 +1667,6 @@ module Drale
           safe_point(point).project_to_plane([origin, normal])
         rescue StandardError
           safe_point(point)
-        end
-
-        # Ensures the given world-space normal points toward the camera eye.
-        # Reverses the normal if it points away from the viewpoint.
-        # This corrects for reversed faces in the model (front face = interior side),
-        # which would otherwise cause a 180° placement error for the window.
-        def ensure_normal_toward_camera(normal, face_point)
-          return normal unless normal && face_point
-
-          model = Sketchup.active_model
-          return normal unless model
-
-          view = model.active_view
-          return normal unless view
-
-          eye = begin
-            safe_point(view.camera.eye)
-          rescue StandardError
-            nil
-          end
-          return normal unless eye
-
-          to_eye = eye - face_point
-          return normal if to_eye.length < 1.0
-
-          normal.dot(to_eye) < 0 ? normal.reverse : normal
-        rescue StandardError
-          normal
         end
 
         def axis_on_plane(vector, normal)

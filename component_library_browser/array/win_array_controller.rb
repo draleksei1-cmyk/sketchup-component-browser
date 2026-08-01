@@ -198,7 +198,7 @@ module Drale
             return false
           end
 
-          unless entities.is_a?(Sketchup::Entities) && basis_tr.is_a?(Geom::Transformation)
+          unless valid_window_target?(face, entities, basis_tr)
             UI.messagebox('Не удалось определить плоскость вставки.')
             return false
           end
@@ -523,8 +523,22 @@ module Drale
           false
         end
 
+        # Cutting windows can only glue to a real face in the entities context
+        # that owns it. This prevents an instance from being added to a parent
+        # group/model while trying to cut a face reached through another path.
+        def valid_window_target?(face, entities, basis_tr)
+          return false unless face&.valid? && entities.is_a?(Sketchup::Entities)
+          return false unless basis_tr.is_a?(Geom::Transformation)
+          return false unless face.parent.equal?(entities)
+
+          normal = face.normal
+          normal && normal.length.to_f > 1.0e-9
+        rescue StandardError
+          false
+        end
+
         def add_instance_in_entities(entities, basis_tr, world_tr)
-          local_tr = basis_tr.inverse * world_tr
+          local_tr = WindowPlacement.local_transform(basis_tr, world_tr)
           entities.add_instance(@source_definition, local_tr)
         end
 
@@ -699,7 +713,11 @@ module Drale
           glued_face = entity.respond_to?(:glued_to) ? entity.glued_to : nil
           return nil unless glued_face.is_a?(Sketchup::Face) && glued_face.valid?
 
-          face_normal = normalize_vector(glued_face.normal)
+          face_normal = WindowPlacement.face_normal_in_world(
+            glued_face.normal,
+            tr,
+            entity.transformation
+          )
           return nil unless face_normal
 
           x_axis = normalize_vector(tr.xaxis)
