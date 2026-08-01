@@ -278,6 +278,29 @@ class WindowInsertionContractTest < Minitest::Test
     instance.send(:persist_session_params)
     assert_equal saved, written
   end
+
+  def test_manual_legacy_pitch_survives_open_choose_source_apply_flow
+    controller = Drale::ComponentLibraryBrowser::ArrayLayout::WinArrayController.allocate
+    manual = controller.send(
+      :normalize_params,
+      'count_x' => 2,
+      'count_y' => 1,
+      'axis_spacing_mm' => 3300.0,
+      'floor_height_mm' => 3000.0,
+      'auto_step' => false
+    )
+    controller.instance_variable_set(:@params, manual)
+
+    controller.send(:apply_source_step_suggestions, 1500.0, 1200.0)
+    applied = controller.instance_variable_get(:@params)
+
+    assert_equal 3300.0, applied['step_x_mm']
+    assert_equal 3000.0, applied['step_y_mm']
+    assert_equal 3300.0, applied['axis_spacing_mm']
+    assert_equal 3000.0, applied['floor_height_mm']
+    assert_equal 1500.0, applied['suggested_step_x_mm']
+    assert_equal 1200.0, applied['suggested_step_y_mm']
+  end
 end
 
 WindowPlacementEpsilon = Drale::ComponentLibraryBrowser::Tools::WindowPlacement::SURFACE_EPSILON

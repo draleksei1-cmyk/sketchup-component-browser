@@ -454,10 +454,10 @@ module Drale
           plane_x, plane_y, _thickness = source_plane_dimensions(@source_definition, sx, sy, sz)
           @source_bbox_x = plane_x.to_f
           @source_bbox_y = plane_y.to_f
-          @params['step_x_mm'] = length_to_mm(plane_x).round(2)
-          @params['step_y_mm'] = length_to_mm(plane_y).round(2)
-          @params['axis_spacing_mm'] = @params['step_x_mm']
-          @params['floor_height_mm'] = @params['step_y_mm']
+          apply_source_step_suggestions(
+            length_to_mm(plane_x).round(2),
+            length_to_mm(plane_y).round(2)
+          )
           @preview_cache = build_preview_cache(@source_definition)
 
           ensure_tool!
@@ -794,6 +794,8 @@ module Drale
             'auto_step' => data.key?('auto_step') ? !!data['auto_step'] : false,
             'step_x_mm' => axis_spacing,
             'step_y_mm' => floor_height,
+            'suggested_step_x_mm' => normalize_float(data['suggested_step_x_mm'], nil),
+            'suggested_step_y_mm' => normalize_float(data['suggested_step_y_mm'], nil),
             'seam_x_mm' => normalize_float(data['seam_x_mm'], 0.0),
             'seam_y_mm' => normalize_float(data['seam_y_mm'], 0.0)
           }
@@ -861,6 +863,19 @@ module Drale
           Sketchup.active_model&.active_view&.invalidate
         rescue StandardError
           nil
+        end
+
+        def apply_source_step_suggestions(step_x_mm, step_y_mm)
+          suggested_x = normalize_float(step_x_mm, 1.0)
+          suggested_y = normalize_float(step_y_mm, 1.0)
+          @params['suggested_step_x_mm'] = suggested_x
+          @params['suggested_step_y_mm'] = suggested_y
+          return unless @params['auto_step']
+
+          @params['step_x_mm'] = suggested_x
+          @params['step_y_mm'] = suggested_y
+          @params['axis_spacing_mm'] = suggested_x
+          @params['floor_height_mm'] = suggested_y
         end
 
         def session_params_for_storage(params)
