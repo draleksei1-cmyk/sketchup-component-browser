@@ -8,7 +8,7 @@ module Drale
     EXTENSION_COPYRIGHT = 'Copyright (c) ALeksei Serov'.freeze
     EXTENSION_DESCRIPTION = 'Local component and model library organizer for SketchUp.'.freeze
 
-    VERSION_FILE = File.join(File.dirname(__FILE__), 'VERSION').freeze
+    VERSION_FILE = File.join(File.dirname(__FILE__), 'component_library_browser', 'VERSION').freeze
     EXTENSION_VERSION =
       if File.file?(VERSION_FILE)
         File.read(VERSION_FILE).strip

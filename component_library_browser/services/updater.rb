@@ -1,8 +1,13 @@
+# frozen_string_literal: true
+
 require 'net/http'
 require 'json'
 require 'fileutils'
 require 'uri'
 require 'tmpdir'
+require 'digest'
+require 'time'
+require 'shellwords'
 
 module Drale
   module ComponentLibraryBrowser
@@ -11,212 +16,274 @@ module Drale
 
       GITHUB_OWNER = 'draleksei1-cmyk'.freeze
       GITHUB_REPO = 'sketchup-component-browser'.freeze
-
       API_RELEASES_URL = "https://api.github.com/repos/#{GITHUB_OWNER}/#{GITHUB_REPO}/releases/latest".freeze
-      RAW_VERSION_URL = "https://raw.githubusercontent.com/#{GITHUB_OWNER}/#{GITHUB_REPO}/master/VERSION".freeze
-      ZIPBALL_URL = "https://github.com/#{GITHUB_OWNER}/#{GITHUB_REPO}/archive/refs/heads/master.zip".freeze
+      LOADER_NAME = 'component_library_browser.rb'.freeze
+      PACKAGE_NAME = 'component_library_browser'.freeze
+      REQUIRED_DIRECTORIES = %w[icons ui tools services].freeze
 
-      UPDATE_STATE_FILE = File.join(File.dirname(__FILE__), '..', '..', '.update_state.json').freeze
+      class ReleaseError < StandardError; end
+      class VerificationError < StandardError; end
 
-      def check_for_updates(background: false)
-        Logger.info('Проверка обновлений...')
-        latest_version = fetch_latest_version
-        return nil unless latest_version
-
-        current = current_version
-        Logger.info("Текущая версия: #{current}, последняя: #{latest_version}")
-
-        comparison = compare_versions(latest_version, current)
-        if comparison > 0
-          Logger.info("Доступно обновление: v#{current} -> v#{latest_version}")
-          return { 'available' => true, 'latest_version' => latest_version, 'current_version' => current }
-        end
-
-        Logger.info('Установлена последняя версия.')
-        { 'available' => false, 'latest_version' => latest_version, 'current_version' => current }
-      rescue StandardError => e
-        Logger.error('Ошибка проверки обновлений', e)
-        if background
-          nil
-        else
-          { 'error' => e.message }
-        end
+      def package_dir
+        File.expand_path('..', __dir__)
       end
 
-      def download_and_apply_update
-        update_info = check_for_updates
-        return nil unless update_info && update_info['available']
+      def package_root
+        File.dirname(package_dir)
+      end
 
-        latest = update_info['latest_version']
-        Logger.info("Скачивание обновления v#{latest}...")
+      def version_file
+        File.join(package_dir, 'VERSION')
+      end
 
-        zip_path = download_zipball
-        return nil unless zip_path
+      def loader_file
+        File.join(package_root, LOADER_NAME)
+      end
 
-        extract_dir = File.join(Dir.tmpdir, "sketchup_component_library_update_#{Time.now.to_i}")
-        FileUtils.mkdir_p(extract_dir)
+      def current_version
+        File.file?(version_file) ? File.read(version_file).strip : EXTENSION_VERSION.to_s
+      end
 
-        extract_zip(zip_path, extract_dir)
-        return nil unless extract_dir
+      def check_for_updates(background: false, http_get: nil)
+        release = fetch_latest_release(http_get: http_get)
+        current = current_version
+        available = compare_versions(release.fetch('version'), current) > 0
+        {
+          'available' => available,
+          'latest_version' => release.fetch('version'),
+          'current_version' => current,
+          'rbz_url' => release.fetch('rbz_url'),
+          'checksum_url' => release.fetch('checksum_url'),
+          'asset_name' => release.fetch('asset_name')
+        }
+      rescue StandardError => error
+        Logger.error('Update check failed', error)
+        background ? nil : { 'error' => error.message }
+      end
 
-        repo_root = find_repo_root_in_extract(extract_dir)
-        return nil unless repo_root
+      def fetch_latest_release(http_get: nil)
+        response = http_request(URI(API_RELEASES_URL), open_timeout: 5, read_timeout: 10, http_get: http_get)
+        raise ReleaseError, "GitHub release API returned HTTP #{response.code}" unless response.code.to_i == 200
 
-        plugin_dir = File.expand_path(File.join(File.dirname(__FILE__), '..', '..'))
-        backup_dir = File.join(File.dirname(plugin_dir), ".backup_#{Time.now.strftime('%Y%m%d_%H%M%S')}")
+        data = JSON.parse(response.body.to_s)
+        version = data['tag_name'].to_s.sub(/\Av/i, '')
+        raise ReleaseError, 'Latest release has no semantic version tag' unless semantic_version?(version)
 
-        Logger.info("Создание резервной копии: #{backup_dir}")
-        FileUtils.cp_r(plugin_dir, backup_dir)
+        assets = Array(data['assets'])
+        rbz = assets.find { |asset| asset['name'].to_s.downcase.end_with?('.rbz') }
+        raise ReleaseError, 'Latest release has no RBZ asset' unless rbz && rbz['browser_download_url']
 
-        Logger.info("Применение обновления...")
-        replace_plugin_files(repo_root, plugin_dir)
-        FileUtils.remove_entry(extract_dir) if File.directory?(extract_dir)
-        FileUtils.remove_entry(zip_path) if File.file?(zip_path)
+        checksum_names = ["#{rbz['name']}.sha256", "#{rbz['name']}.sha256.txt"]
+        checksum = assets.find { |asset| checksum_names.include?(asset['name'].to_s) }
+        raise ReleaseError, 'Latest release has no matching RBZ checksum asset' unless checksum && checksum['browser_download_url']
 
-        write_update_state(latest)
-        Logger.info("Обновление до v#{latest} применено. Перезагрузка плагина...")
-        { 'success' => true, 'version' => latest, 'backup' => backup_dir }
-      rescue StandardError => e
-        Logger.error('Ошибка применения обновления', e)
-        { 'error' => e.message }
+        {
+          'version' => version,
+          'asset_name' => rbz.fetch('name'),
+          'rbz_url' => rbz.fetch('browser_download_url'),
+          'checksum_url' => checksum.fetch('browser_download_url')
+        }
+      rescue JSON::ParserError => error
+        raise ReleaseError, "GitHub release response is invalid JSON: #{error.message}"
+      end
+
+      def download_and_apply_update(http_get: nil)
+        update = check_for_updates(http_get: http_get)
+        return update if update.is_a?(Hash) && update['error']
+        return { 'success' => false, 'message' => 'Already up to date.' } unless update && update['available']
+
+        workspace = Dir.mktmpdir('component_library_browser_update_')
+        rbz_path = File.join(workspace, update.fetch('asset_name'))
+        checksum_path = "#{rbz_path}.sha256"
+        stage_dir = File.join(workspace, 'staged')
+
+        download_to!(update.fetch('rbz_url'), rbz_path, http_get: http_get)
+        download_to!(update.fetch('checksum_url'), checksum_path, http_get: http_get)
+        verify_checksum!(rbz_path, File.read(checksum_path, encoding: 'UTF-8'))
+        extract_rbz!(rbz_path, stage_dir)
+        validated = validate_staged_package!(stage_dir, expected_version: update.fetch('latest_version'))
+
+        install_staged_package!(validated, workspace)
+        write_update_state(update.fetch('latest_version'))
+        FileUtils.remove_entry_secure(workspace) if File.directory?(workspace)
+        { 'success' => true, 'version' => update.fetch('latest_version') }
+      rescue Errno::EACCES, Errno::EPERM, Errno::EBUSY => error
+        Logger.warn("Update staged at #{workspace}; SketchUp restart required: #{error.message}")
+        { 'success' => false, 'restart_required' => true, 'staged_path' => workspace, 'error' => error.message }
+      rescue StandardError => error
+        Logger.error('Update installation failed', error)
+        { 'success' => false, 'error' => error.message, 'staged_path' => (defined?(workspace) ? workspace : nil) }
       end
 
       def apply_and_reload
         result = download_and_apply_update
         if result && result['success']
-          UI.messagebox("Обновление до v#{result['version']} установлено.\nПлагин будет перезагружен.")
+          UI.messagebox("Update v#{result['version']} installed. Reloading Ruby code now.")
           reload_plugin!
+        elsif result && result['restart_required']
+          UI.messagebox("Update is safely staged at:\n#{result['staged_path']}\n\nRestart SketchUp to complete it.", MB_MULTILINE)
         elsif result && result['error']
-          UI.messagebox("Ошибка обновления: #{result['error']}", MB_MULTILINE)
+          UI.messagebox("Update error: #{result['error']}", MB_MULTILINE)
         end
         result
       end
 
-      def current_version
-        EXTENSION_VERSION
+      def verify_checksum!(rbz_path, checksum_text)
+        expected_name = File.basename(rbz_path)
+        line = checksum_text.to_s.each_line.map(&:strip).find { |entry| entry.end_with?(expected_name) }
+        raise VerificationError, "Checksum manifest has no digest for #{expected_name}" unless line
+
+        digest, filename = line.split(/\s+/, 2)
+        raise VerificationError, 'Checksum manifest has an invalid SHA256 digest' unless digest.to_s.match?(/\A[0-9a-f]{64}\z/i)
+        raise VerificationError, 'Checksum manifest asset name does not match RBZ' unless filename.to_s.sub(/\A\*?/, '') == expected_name
+        raise VerificationError, 'RBZ SHA256 does not match release manifest' unless Digest::SHA256.file(rbz_path).hexdigest.casecmp?(digest)
+
+        true
+      end
+
+      def validate_staged_package!(stage_root, expected_version: nil)
+        stage_root = File.expand_path(stage_root)
+        package = File.join(stage_root, PACKAGE_NAME)
+        loader = File.join(stage_root, LOADER_NAME)
+        version = File.join(package, 'VERSION')
+        assert_path_within!(stage_root, package)
+        assert_path_within!(stage_root, loader)
+        raise VerificationError, 'RBZ contains no extension loader' unless File.file?(loader)
+        raise VerificationError, 'RBZ contains no package VERSION' unless File.file?(version)
+        REQUIRED_DIRECTORIES.each do |directory|
+          raise VerificationError, "RBZ is missing required directory: #{directory}" unless File.directory?(File.join(package, directory))
+        end
+
+        actual_version = File.read(version).strip
+        if expected_version && actual_version != expected_version
+          raise VerificationError, "RBZ VERSION #{actual_version} does not match release #{expected_version}"
+        end
+        { 'stage_root' => stage_root, 'package_dir' => package, 'loader' => loader, 'version' => actual_version }
+      end
+
+      def assert_path_within!(root, path)
+        root = File.expand_path(root)
+        path = File.expand_path(path)
+        return path if path.start_with?(root + File::SEPARATOR)
+
+        raise VerificationError, "Path outside staged extension root: #{path}"
       end
 
       private
 
-      def fetch_latest_version
-        uri = URI(RAW_VERSION_URL)
-        response = make_http_request(uri, open_timeout: 5, read_timeout: 5)
-        return nil unless response.is_a?(Net::HTTPResponse) && response.code.to_i == 200
+      def install_staged_package!(validated, workspace)
+        target_package = package_dir
+        target_loader = loader_file
+        backup = File.join(package_root, ".#{PACKAGE_NAME}_backup_#{Time.now.strftime('%Y%m%d_%H%M%S')}")
+        FileUtils.mkdir_p(backup)
 
-        body = response.body.to_s.strip
-        body.empty? ? nil : body
-      rescue StandardError => e
-        Logger.warn("Не удалось получить версию: #{e.message}")
-        nil
+        # No Plugins-root replacement: only this extension folder and its loader.
+        FileUtils.cp_r(target_package, File.join(backup, PACKAGE_NAME)) if File.directory?(target_package)
+        FileUtils.cp(target_loader, backup) if File.file?(target_loader)
+
+        pending_package = File.join(workspace, 'pending_package')
+        pending_loader = File.join(workspace, LOADER_NAME)
+        FileUtils.cp_r(validated.fetch('package_dir'), pending_package)
+        FileUtils.cp(validated.fetch('loader'), pending_loader)
+
+        old_package = "#{target_package}.previous"
+        old_loader = "#{target_loader}.previous"
+        FileUtils.rm_rf(old_package) if File.exist?(old_package)
+        FileUtils.rm_f(old_loader) if File.file?(old_loader)
+        FileUtils.mv(target_package, old_package) if File.exist?(target_package)
+        FileUtils.mv(target_loader, old_loader) if File.file?(target_loader)
+        FileUtils.mv(pending_package, target_package)
+        FileUtils.mv(pending_loader, target_loader)
+        FileUtils.rm_rf(old_package) if File.exist?(old_package)
+        FileUtils.rm_f(old_loader) if File.file?(old_loader)
+        backup
+      rescue StandardError
+        FileUtils.rm_rf(target_package) if File.exist?(target_package) && File.directory?(File.join(backup, PACKAGE_NAME))
+        FileUtils.cp_r(File.join(backup, PACKAGE_NAME), target_package) if File.directory?(File.join(backup, PACKAGE_NAME))
+        FileUtils.cp(File.join(backup, LOADER_NAME), target_loader) if File.file?(File.join(backup, LOADER_NAME))
+        raise
       end
 
-      def fetch_latest_release_tag
-        uri = URI(API_RELEASES_URL)
-        response = make_http_request(uri, open_timeout: 5, read_timeout: 5)
-        return nil unless response.is_a?(Net::HTTPResponse) && response.code.to_i == 200
+      def download_to!(url, path, http_get: nil)
+        response = http_request(URI(url), open_timeout: 30, read_timeout: 120, http_get: http_get)
+        raise ReleaseError, "Download returned HTTP #{response.code}" unless response.code.to_i == 200
 
-        data = JSON.parse(response.body)
-        tag = data['tag_name'].to_s.strip
-        tag.empty? ? nil : tag.sub(/\Av/i, '')
-      rescue StandardError => e
-        Logger.warn("Не удалось получить релиз: #{e.message}")
-        nil
+        File.binwrite(path, response.body)
       end
 
-      def download_zipball
-        zip_path = File.join(Dir.tmpdir, "sketchup_component_library_update_#{Time.now.to_i}.zip")
+      def http_request(uri, open_timeout:, read_timeout:, http_get: nil)
+        return http_get.call(uri, open_timeout: open_timeout, read_timeout: read_timeout) if http_get
 
-        uri = URI(ZIPBALL_URL)
-        Logger.info("Скачивание #{ZIPBALL_URL}")
-
-        response = make_http_request(uri, open_timeout: 30, read_timeout: 120)
-        return nil unless response.is_a?(Net::HTTPResponse) && response.code.to_i == 200
-
-        File.open(zip_path, 'wb') { |f| f.write(response.body) }
-        Logger.info("Архив сохранён: #{zip_path} (#{response.body.bytesize} байт)")
-        zip_path
-      rescue StandardError => e
-        Logger.error('Ошибка скачивания архива', e)
-        nil
-      end
-
-      def make_http_request(uri, open_timeout:, read_timeout:)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = (uri.scheme == 'https')
         http.open_timeout = open_timeout
         http.read_timeout = read_timeout
-
         request = Net::HTTP::Get.new(uri.request_uri)
         request['User-Agent'] = "ComponentLibraryBrowser/#{EXTENSION_VERSION}"
-        request['Accept'] = 'application/json'
-
+        request['Accept'] = 'application/vnd.github+json'
         http.request(request)
       end
 
-      def extract_zip(zip_path, dest_dir)
+      def extract_rbz!(rbz_path, destination)
+        raise VerificationError, 'RBZ archive is empty' unless File.size?(rbz_path)
+
         if Gem.win_platform?
-          extract_zip_powershell(zip_path, dest_dir)
+          extract_rbz_powershell!(rbz_path, destination)
         else
-          extract_zip_system(zip_path, dest_dir)
+          raise VerificationError, 'RBZ archive contains unsafe paths' unless archive_paths_safe?(rbz_path)
+          raise VerificationError, 'Unable to extract RBZ' unless system('unzip', '-q', rbz_path, '-d', destination)
         end
       end
 
-      def extract_zip_powershell(zip_path, dest_dir)
-        ps_command = "Add-Type -AssemblyName System.IO.Compression.FileSystem; " \
-                     "[System.IO.Compression.ZipFile]::ExtractToDirectory('#{zip_path.gsub("'", "''")}', '#{dest_dir.gsub("'", "''")}')"
-        system('powershell', '-NoProfile', '-Command', ps_command)
+      def archive_paths_safe?(rbz_path)
+        entries = `unzip -Z1 #{Shellwords.escape(rbz_path)}`.lines.map(&:strip)
+        !entries.empty? && entries.all? { |entry| archive_entry_safe?(entry) }
       end
 
-      def extract_zip_system(zip_path, dest_dir)
-        system('unzip', '-o', zip_path, '-d', dest_dir)
+      def archive_entry_safe?(entry)
+        !entry.empty? && !entry.start_with?('/', '\\') && !entry.match?(/\A[A-Za-z]:[\\\/]/) && entry.split(/[\\\/]/).none? { |part| part == '..' }
       end
 
-      def find_repo_root_in_extract(extract_dir)
-        entries = Dir.entries(extract_dir) - ['.', '..']
-        if entries.length == 1
-          candidate = File.join(extract_dir, entries.first)
-          return candidate if File.directory?(candidate)
-        end
-        extract_dir
+      def extract_rbz_powershell!(rbz_path, destination)
+        archive = powershell_literal(rbz_path)
+        target = powershell_literal(destination)
+        script = <<~POWERSHELL
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead(#{archive})
+          try {
+            foreach ($entry in $archive.Entries) {
+              $name = $entry.FullName
+              if ([IO.Path]::IsPathRooted($name) -or $name -match '(^|[\\/])\.\.([\\/]|$)' -or $name -match '^[A-Za-z]:') { throw "Unsafe RBZ path: $name" }
+            }
+          } finally { $archive.Dispose() }
+          [System.IO.Compression.ZipFile]::ExtractToDirectory(#{archive}, #{target})
+        POWERSHELL
+        raise VerificationError, 'Unable to extract a safe RBZ archive' unless system('powershell', '-NoProfile', '-NonInteractive', '-Command', script)
       end
 
-      def replace_plugin_files(source_root, target_root)
-        Dir.glob(File.join(source_root, '**', '{*,.*}'), File::FNM_DOTMATCH).each do |source_path|
-          next if File.directory?(source_path)
-          basename = File.basename(source_path)
-          next if basename == '.' || basename == '..'
-          next if basename == '.git' || source_path.include?('/.git/')
-          next if basename == '.update_state.json'
+      def powershell_literal(value)
+        "'#{value.to_s.gsub("'", "''")}'"
+      end
 
-          relative = source_path.sub(source_root, '').sub(%r{\A[/\\]}, '')
-          next if relative.empty?
-
-          target_path = File.join(target_root, relative)
-          FileUtils.mkdir_p(File.dirname(target_path))
-          FileUtils.cp(source_path, target_path)
-          Logger.debug("Обно��лён: #{relative}")
-        end
-        true
+      def semantic_version?(version)
+        version.match?(/\A\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?\z/)
       end
 
       def compare_versions(a, b)
-        a_segments = a.split('.').map(&:to_i)
-        b_segments = b.split('.').map(&:to_i)
-        max_len = [a_segments.length, b_segments.length].max
-        a_segments += [0] * (max_len - a_segments.length)
-        b_segments += [0] * (max_len - b_segments.length)
-
-        a_segments.zip(b_segments).each do |sa, sb|
-          return sa <=> sb unless sa == sb
+        a_segments = a.to_s.split(/[.+-]/).first(3).map(&:to_i)
+        b_segments = b.to_s.split(/[.+-]/).first(3).map(&:to_i)
+        3.times do |index|
+          comparison = (a_segments[index] || 0) <=> (b_segments[index] || 0)
+          return comparison unless comparison.zero?
         end
         0
       end
 
       def write_update_state(version)
-        state = { 'updated_to' => version, 'updated_at' => Time.now.utc.iso8601 }
-        File.write(UPDATE_STATE_FILE, JSON.pretty_generate(state))
-      rescue StandardError => e
-        Logger.warn("Не удалось записать состояние обновления: #{e.message}")
+        path = File.join(package_dir, '.update_state.json')
+        File.write(path, JSON.pretty_generate('updated_to' => version, 'updated_at' => Time.now.utc.iso8601))
+      rescue StandardError => error
+        Logger.warn("Could not write update state: #{error.message}")
       end
 
       def reload_plugin!
@@ -224,12 +291,10 @@ module Drale
         if main.respond_to?(:reload_plugin!, true)
           main.send(:reload_plugin!)
         else
-          Sketchup.status_text = 'Component Library Browser обновлён. Перезапустите SketchUp для применения изменений.'
-          Logger.info('Плагин обновлён. Требуется ручная перезагрузка.')
+          Sketchup.status_text = 'Update installed. Restart SketchUp to load all extension files.'
         end
-      rescue StandardError => e
-        Logger.error('Ошибка перезагрузки плагина', e)
-        UI.messagebox("Ошибка перезагрузки плагина после обновления:\n#{e.message}\n\nПерезапустите SketchUp.")
+      rescue StandardError => error
+        Logger.error('Plugin reload failed; restart SketchUp is required', error)
       end
     end
   end

@@ -1,0 +1,45 @@
+name: Release SketchUp extension
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '2.7'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Ruby syntax and contract tests
+        shell: pwsh
+        run: |
+          Get-ChildItem component_library_browser -Recurse -Filter *.rb | ForEach-Object { ruby -c $_.FullName }
+          ruby -c component_library_browser.rb
+          Get-ChildItem test -Filter *_test.rb | ForEach-Object { ruby $_.FullName }
+
+      - name: Static UI check
+        run: node --check component_library_browser/ui/app.js
+
+      - name: Build verified RBZ
+        shell: pwsh
+        run: ./scripts/build_rbz.ps1 -OutputDirectory dist -SelfTest
+
+      - name: Create GitHub Release and upload assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = Get-ChildItem dist -File | Select-Object -ExpandProperty FullName
+          gh release create $env:GITHUB_REF_NAME $assets --generate-notes

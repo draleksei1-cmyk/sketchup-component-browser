@@ -23,6 +23,7 @@ require_relative 'services/preview_regenerator'
 require_relative 'services/pack_transfer'
 require_relative 'tools/pick_source_tool'
 require_relative 'services/updater'
+require_relative 'services/runtime_manifest'
 
 module Drale
   module ComponentLibraryBrowser
@@ -855,7 +856,7 @@ module Drale
       close_live_plugin_sessions_before_reload
 
       plugin_dir = __dir__
-reload_paths = [
+      reload_paths = [
         'fs.rb',
         'storage.rb',
         'logger.rb',
@@ -876,12 +877,11 @@ reload_paths = [
         'array/win_array_controller.rb',
         'main.rb'
       ]
+      raise 'Reload manifest drift detected' unless reload_paths == RuntimeManifest::RELOAD_PATHS
 
-      reload_paths.each do |relative_path|
-        load File.join(plugin_dir, relative_path)
-      end
+      RuntimeManifest.absolute_reload_paths(plugin_dir).each { |path| load path }
 
-Sketchup.status_text = 'Component Library Browser перезагружен.'
+      Sketchup.status_text = 'Component Library Browser Ruby code reloaded. Restart SketchUp after installing an update with locked files.'
       true
     rescue StandardError => error
       show_error('Перезагрузка плагина', error)
