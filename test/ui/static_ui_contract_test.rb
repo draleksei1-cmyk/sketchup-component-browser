@@ -135,6 +135,21 @@ class StaticUiContractTest < Minitest::Test
     assert_includes css, 'transform:scale(1.015)'
   end
 
+  def test_settings_rail_button_has_a_quiet_aligned_icon_treatment_and_routes_to_settings
+    assert_match(/id=["']settings-btn["'][^>]*class=["'][^"']*rail-settings-button/, html)
+    assert_match(/id=["']settings-btn["'][^>]*>\s*<img src=["']\.\.\/icons\/settings\.svg["']/, html)
+
+    assert_includes css, '.rail-settings-button{width:32px;height:32px;padding:0;display:grid;place-items:center'
+    assert_includes css, '.rail-settings-button img{width:18px;height:18px'
+    assert_includes css, '.rail-settings-button:hover{background:#edf2ff'
+    assert_includes css, '.rail-settings-button:focus{outline:none;box-shadow:none}'
+    assert_includes css, '.rail-settings-button:focus-visible{outline:2px solid #8ab4ff;outline-offset:2px}'
+
+    settings_binding = js[js.index('dom["settings-btn"].addEventListener'), js.index('dom["settings-close"].addEventListener') - js.index('dom["settings-btn"].addEventListener')]
+    assert_includes settings_binding, 'ruby("open_settings")'
+    refute_includes settings_binding, 'change_library_root'
+  end
+
   def test_ux_pass_has_inline_placement_controls_and_validated_rotation_step
     assert_match(/class=["']placement-option["'][^>]*>\s*<input id=["']opt-surface["']/, html)
     assert_match(/id=["']opt-random-step["'][^>]*type=["']number["'][^>]*min=["']1["'][^>]*max=["']360["'][^>]*value=["']90["']/, html)
