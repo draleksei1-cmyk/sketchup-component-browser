@@ -114,7 +114,36 @@ X_AXIS = Geom::Vector3d.new(1, 0, 0) unless defined?(X_AXIS)
 Y_AXIS = Geom::Vector3d.new(0, 1, 0) unless defined?(Y_AXIS)
 Z_AXIS = Geom::Vector3d.new(0, 0, 1) unless defined?(Z_AXIS)
 
+module Sketchup
+  class Face
+    attr_reader :normal
+
+    def initialize(normal)
+      @normal = normal
+    end
+
+    def valid?
+      true
+    end
+  end
+
+  class ComponentInstance
+    attr_reader :transformation, :glued_to
+
+    def initialize(transformation, glued_to)
+      @transformation = transformation
+      @glued_to = glued_to
+    end
+
+    def valid?
+      true
+    end
+  end
+end
+
 require_relative '../component_library_browser/tools/window_placement'
+require_relative '../component_library_browser/tools/array_tool'
+require_relative '../component_library_browser/array/win_array_controller'
 
 class WindowInsertionContractTest < Minitest::Test
   ROOT = File.expand_path('..', __dir__)
@@ -166,6 +195,46 @@ class WindowInsertionContractTest < Minitest::Test
     assert_includes controller, 'valid_window_target?(face, entities, basis_tr)'
     refute_match(/ensure_normal_toward_camera/, tool)
     assert_includes tool, 'WindowPlacement.for_host'
+  end
+
+  def test_reload_includes_the_shared_window_placement_helper
+    main = File.read(File.join(ROOT, 'component_library_browser', 'main.rb'), encoding: 'UTF-8')
+
+    assert_match(/reload_paths\s*=\s*\[[\s\S]*'tools\/window_placement\.rb'/, main)
+  end
+
+  def test_source_instance_relative_frame_survives_a_rotated_context
+    context = Geom::Transformation.axes(Geom::Point3d.new(10, -5, 2), Y_AXIS, X_AXIS.reverse, Z_AXIS)
+    local_instance = Geom::Transformation.axes(Geom::Point3d.new(1, 2, 0), X_AXIS, Y_AXIS, Z_AXIS)
+    world_instance = context * local_instance
+    source = Sketchup::ComponentInstance.new(local_instance, Sketchup::Face.new(Z_AXIS))
+
+    state = Drale::ComponentLibraryBrowser::ArrayLayout::WinArrayController.allocate.send(
+      :build_source_window_prototype_state,
+      source,
+      world_instance
+    )
+
+    refute_nil state
+    assert_instance_of Geom::Transformation, state[:relative_transform]
+    assert_operator state[:source_face_z].dot(Z_AXIS), :>, 0.999
+
+    target_frame = Geom::Transformation.axes(Geom::Point3d.new(-4, 7, 3), X_AXIS, Y_AXIS, Z_AXIS)
+    tool = Drale::ComponentLibraryBrowser::Tools::ArrayTool.allocate
+    tool.instance_variable_set(:@params, { 'mode' => 'windows' })
+    tool.instance_variable_set(:@source_window_prototype_state, state)
+    placed = tool.send(:base_transform_from_source_window_prototype_state, target_frame, ORIGIN)
+
+    assert_in_delta 1.0, X_AXIS.transform(placed).dot(Y_AXIS), 1.0e-12
+    assert_in_delta(-1.0, Y_AXIS.transform(placed).dot(X_AXIS), 1.0e-12)
+    assert_in_delta 1.0, Z_AXIS.transform(placed).dot(Z_AXIS), 1.0e-12
+  end
+
+  def test_glue_failure_does_not_erase_and_retry_with_an_unconditional_flip
+    controller = File.read(File.join(ROOT, 'component_library_browser', 'array', 'win_array_controller.rb'), encoding: 'UTF-8')
+
+    refute_match(/flip_world_transform/, controller)
+    refute_match(/instance\.erase!/, controller)
   end
 end
 

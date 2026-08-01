@@ -833,6 +833,7 @@ reload_paths = [
         'services/updater.rb',
         'tools/pick_source_tool.rb',
         'tools/array_tool.rb',
+        'tools/window_placement.rb',
         'array/array_controller.rb',
         'array/win_array_controller.rb',
         'main.rb'

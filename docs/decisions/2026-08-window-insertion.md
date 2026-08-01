@@ -6,7 +6,9 @@ Expose one public command, **«Раскладка окон»**. It uses the form
 face-frame algorithm inside `WinArrayController`. The experimental **Native
 Copy** command is removed from the Extensions menu, toolbar, reload list, and
 library-pick dispatch. Existing saved window settings remain compatible because
-their `count_*`, spacing, seam, and `mode: windows` values are unchanged.
+their `count_*`, spacing, seam, and `mode: windows` values are unchanged. The
+shared placement helper is included in the explicit safe reload list, so a
+plugin reload cannot retain stale placement geometry.
 
 ## Placement contract
 
@@ -18,7 +20,8 @@ their `count_*`, spacing, seam, and `mode: windows` values are unchanged.
   only when it faces away, then use a deterministic `1e-6` model-unit offset.
 - Insert the original definition through `Entities#add_instance` in the target
   entities context and set `glued_to`; do not recreate its faces/materials or
-  perform host booleans/erasures.
+  perform host booleans/erasures. If an opening component cannot glue, abort
+  the operation; do not erase and retry it with an arbitrary second flip.
 
 ## SketchUp 2026 manual acceptance
 

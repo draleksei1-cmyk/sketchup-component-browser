@@ -226,16 +226,6 @@ module Drale
             glued = glue_instance_to_face(instance, current_face)
             debug_console('glue_status', { 'prototype' => @source_name, 'glued' => glued, 'glued_to' => instance.respond_to?(:glued_to) ? !!instance.glued_to : nil })
             if opening && !glued
-              instance.erase! if instance.valid?
-              flipped_world_tr = flip_world_transform(world_tr)
-              instance = add_instance_in_entities(entities, basis_tr, flipped_world_tr)
-              tag_array_entity(instance, array_id)
-              glued = glue_instance_to_face(instance, current_face)
-              debug_console('glue_status_flipped', { 'prototype' => @source_name, 'glued' => glued, 'glued_to' => instance.respond_to?(:glued_to) ? !!instance.glued_to : nil })
-            end
-
-            if opening && !glued
-              instance.erase! if instance&.valid?
               raise 'Не удалось приклеить прорезной компонент к плоскости.'
             end
 
@@ -538,7 +528,7 @@ module Drale
         end
 
         def add_instance_in_entities(entities, basis_tr, world_tr)
-          local_tr = WindowPlacement.local_transform(basis_tr, world_tr)
+          local_tr = Tools::WindowPlacement.local_transform(basis_tr, world_tr)
           entities.add_instance(@source_definition, local_tr)
         end
 
@@ -550,16 +540,6 @@ module Drale
           true
         rescue StandardError
           false
-        end
-
-        def flip_world_transform(world_tr)
-          origin = ORIGIN.transform(world_tr)
-          x_axis = X_AXIS.transform(world_tr)
-          y_axis = Y_AXIS.transform(world_tr)
-          z_axis = Z_AXIS.transform(world_tr)
-          Geom::Transformation.axes(origin, x_axis.reverse, y_axis, z_axis.reverse)
-        rescue StandardError
-          world_tr
         end
 
         def resolve_face_by_pid(entities, pid)
@@ -713,24 +693,44 @@ module Drale
           glued_face = entity.respond_to?(:glued_to) ? entity.glued_to : nil
           return nil unless glued_face.is_a?(Sketchup::Face) && glued_face.valid?
 
-          face_normal = WindowPlacement.face_normal_in_world(
+          face_normal = Tools::WindowPlacement.face_normal_in_world(
             glued_face.normal,
             tr,
             entity.transformation
           )
           return nil unless face_normal
 
-          x_axis = normalize_vector(tr.xaxis)
-          y_axis = normalize_vector(tr.yaxis)
-          z_axis = normalize_vector(tr.zaxis)
-          return nil unless x_axis && y_axis && z_axis
+          face_up = axis_on_face(face_normal, Z_AXIS)
+          face_up = axis_on_face(face_normal, Y_AXIS) unless face_up
+          face_up = axis_on_face(face_normal, X_AXIS) unless face_up
+          face_up = normalize_vector(face_up) || Y_AXIS
+          face_right = normalize_vector(face_up * face_normal)
+          face_right = axis_on_face(face_normal, X_AXIS) unless face_right
+          face_right = axis_on_face(face_normal, Y_AXIS) unless face_right
+          face_right = normalize_vector(face_right) || X_AXIS
+          face_up = normalize_vector(face_normal * face_right) || face_up
+
+          face_origin = ORIGIN.transform(tr)
+          source_face_frame = Geom::Transformation.axes(face_origin, face_right, face_up, face_normal)
+          relative_transform = source_face_frame.inverse * tr
 
           {
-            x_axis: x_axis,
-            y_axis: y_axis,
-            z_axis: z_axis,
-            face_normal: face_normal
+            source_face_x: face_right,
+            source_face_y: face_up,
+            source_face_z: face_normal,
+            source_face_origin: face_origin,
+            source_window_transform: tr,
+            relative_transform: relative_transform
           }
+        rescue StandardError
+          nil
+        end
+
+        def axis_on_face(normal, axis)
+          return nil unless normal && axis
+
+          projected = axis - normal * axis.dot(normal)
+          normalize_vector(projected)
         rescue StandardError
           nil
         end
