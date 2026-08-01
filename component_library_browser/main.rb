@@ -102,7 +102,8 @@ module Drale
       if pending_update && pending_update['restart_required']
         Logger.warn('Pending update remains staged; restart SketchUp again after closing locked files.')
       elsif pending_update && pending_update['success']
-        Logger.info("Pending update v#{pending_update['version']} applied before UI initialization.")
+        Sketchup.status_text = "Update v#{pending_update['version']} installed. Restart SketchUp to load the new code."
+        Logger.info("Pending update v#{pending_update['version']} installed; restart SketchUp before using the new code.")
       end
       setup_commands
       setup_menu

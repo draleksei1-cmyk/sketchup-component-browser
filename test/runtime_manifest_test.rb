@@ -35,4 +35,14 @@ class RuntimeManifestTest < Minitest::Test
     assert_includes main, "require_relative 'services/runtime_manifest'"
     assert_includes main, 'RuntimeManifest.absolute_reload_paths(plugin_dir)'
   end
+
+  def test_boot_reports_restart_required_after_a_pending_update_swap
+    main = File.read(File.expand_path('../component_library_browser/main.rb', __dir__), encoding: 'UTF-8')
+    boot = main[main.index('def boot!'), 900]
+
+    assert_includes boot, "pending_update['success']"
+    assert_includes boot, 'Sketchup.status_text ='
+    assert_includes boot, 'Restart SketchUp to load the new code.'
+    refute_includes boot, 'reload_plugin!'
+  end
 end
