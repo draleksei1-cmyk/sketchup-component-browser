@@ -23,5 +23,7 @@
     {"id":"lit-02","kind":"library","name":"Wall sconce","category":"Lighting","tags":["lamp","wall"],"thumb_url":"","favorite":false,"faces_count":1100},
     {"id":"lit-03","kind":"library","name":"Track light","category":"Lighting","tags":["lamp","track"],"thumb_url":"","favorite":false,"faces_count":1900}
   ],
-  "in_model_items": []
+  "in_model_items": [
+    {"kind":"in_model","definition_guid":"def-001","name":"Existing model desk","category":"В модели","instances_count":2,"thumb_url":""}
+  ]
 }

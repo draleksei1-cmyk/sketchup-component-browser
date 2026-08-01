@@ -24,6 +24,14 @@ class StaticUiContractTest < Minitest::Test
     assert_operator fixture.fetch('items').length, :>=, 12
   end
 
+  def test_fixture_covers_model_item_callback_shape
+    fixture = JSON.parse(File.read(File.join(__dir__, 'fixtures', 'library-state.json'), encoding: 'UTF-8'))
+    item = fixture.fetch('in_model_items').first
+    assert_equal 'in_model', item.fetch('kind')
+    assert_equal 'def-001', item.fetch('definition_guid')
+    refute item.key?('id'), 'model items must use definition_guid, not an empty library id'
+  end
+
   def test_harness_stubs_sketchup_before_loading_production_app
     script = File.read(File.join(__dir__, 'test_harness.js'), encoding: 'UTF-8')
     assert_includes script, 'window.sketchup'
@@ -82,5 +90,21 @@ class StaticUiContractTest < Minitest::Test
 
   def test_hidden_dialogs_and_drawer_cannot_be_unhidden_by_layout_css
     assert_includes css, '[hidden]{display:none!important}'
+  end
+
+  def test_category_context_menu_exposes_existing_category_callbacks
+    %w[category-context-menu category-rename category-delete category-regen category-pin].each do |id|
+      assert_match(/id=["']#{Regexp.escape(id)}["']/, html, "missing ##{id}")
+    end
+    %w[category_rename category_delete regenerate_previews_category toggle_pinned_category].each do |callback|
+      assert_match(/#{Regexp.escape(callback)}/, js, "missing callback #{callback}")
+    end
+  end
+
+  def test_model_item_actions_route_by_definition_guid
+    assert_match(/modeltab_save_to_library/, js)
+    assert_match(/replace_selection_model/, js)
+    assert_match(/modeltab_select_all/, js)
+    assert_match(/definition_guid/, js)
   end
 end

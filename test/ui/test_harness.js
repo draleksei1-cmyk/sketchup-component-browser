@@ -57,6 +57,19 @@
       if (document.getElementById("array-pick-banner").hidden) throw new Error("array banner is hidden");
       document.querySelector(".library-card").dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
       if (!callbacks.some(function (entry) { return entry.name === "array_pick_from_library"; })) throw new Error("double click did not call array callback");
+      window.ComponentLibrary.setState(Object.assign({}, window.__clbFixture, { scope: "in_model", search: "" }));
+      var modelCard = document.querySelector(".library-card");
+      modelCard.click();
+      document.getElementById("primary-insert").click();
+      if (!callbacks.some(function (entry) { return entry.name === "modeltab_save_to_library" && String(entry.payload).indexOf("def-001") !== -1; })) throw new Error("model insert did not use definition_guid callback");
+      document.getElementById("drawer-replace").click();
+      if (!callbacks.some(function (entry) { return entry.name === "replace_selection_model" && String(entry.payload).indexOf("def-001") !== -1; })) throw new Error("model replace did not use definition_guid callback");
+      window.ComponentLibrary.setState(Object.assign({}, window.__clbFixture, { scope: "all", search: "" }));
+      var category = document.querySelector(".category-btn");
+      window.prompt = function () { return "Architecture renamed"; };
+      category.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 20, clientY: 20 }));
+      document.getElementById("category-rename").click();
+      if (!callbacks.some(function (entry) { return entry.name === "category_rename"; })) throw new Error("category rename callback missing");
       result.textContent = "Interaction checks: PASS";
       document.body.dataset.interaction = "pass";
     } catch (error) {
