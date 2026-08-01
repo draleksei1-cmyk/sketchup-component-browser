@@ -107,4 +107,12 @@ class StaticUiContractTest < Minitest::Test
     assert_match(/modeltab_select_all/, js)
     assert_match(/definition_guid/, js)
   end
+
+  def test_model_item_actions_use_model_semantics
+    assert_includes js, 'Сохранить в библиотеку'
+    assert_includes html, 'Выбрать все в модели'
+    assert_includes html, 'Вставить'
+    assert_includes html, 'data-action="select_all_model"'
+    refute_match(/data-action=["']select_all_model["'][^>]*>Удалить</, html)
+  end
 end
