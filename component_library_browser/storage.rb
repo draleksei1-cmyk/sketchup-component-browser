@@ -29,7 +29,7 @@ module Drale
         @recovery_status = { 'transactions' => [] }
         recover_pending_transactions!
         @format = detect_format
-        FS.ensure_library_structure(@lib_root) unless @format == :v4
+        FS.ensure_library_structure(@lib_root) unless @format == :v4 || @format == :legacy_read_only
         @index = load_or_initialize_index
       end
 
@@ -457,13 +457,12 @@ module Drale
         taken = @index['items'].select { |entry| FS.same_name?(entry['category'], category) }.map { |entry| entry['name'] }
         final_name = FS.next_unique_name(requested_name, taken)
         item_id = SecureRandom.uuid
-        asset_dir = FS.asset_dir(@lib_root, item_id)
-        FileUtils.mkdir_p(asset_dir)
-        model_path = File.join(asset_dir, 'model.skp')
+        FileUtils.mkdir_p(FS.assets_root(@lib_root))
+        model_path = v4_payload_path(item_id, 'model.skp')
         saved = Compat.save_definition_to_file(definition, model_path, purpose: :library_save, library_path: @lib_root)
         raise 'Не удалось сохранить компонент в библиотеку.' unless saved && File.file?(model_path)
 
-        preview_path = File.join(asset_dir, 'preview.png')
+        preview_path = v4_payload_path(item_id, 'preview.png')
         begin
           definition.save_thumbnail(preview_path) if definition.respond_to?(:save_thumbnail)
           FS.compact_png_thumbnail(preview_path, 256) if File.file?(preview_path)
@@ -480,13 +479,16 @@ module Drale
           'tags' => FS.normalize_tags(tags), 'favorite' => false, 'created_at' => now, 'updated_at' => now,
           'last_used_at' => nil, 'source' => source.to_s, 'content_hash' => normalize_hash(content_hash)
         }.merge(normalized_meta))
-        atomic_write_json(File.join(asset_dir, 'asset.json'), manifest)
+        atomic_write_json(v4_payload_path(item_id, 'asset.json'), manifest)
         reload_index!
         persist_v4_catalog!
         item = item_by_id(item_id)
         { 'item' => item, 'name_changed' => !FS.same_name?(requested_name, final_name), 'requested_name' => requested_name, 'final_name' => final_name }
       rescue StandardError
-        FileUtils.rm_rf(asset_dir) if defined?(asset_dir) && asset_dir && File.directory?(asset_dir)
+        TRANSACTION_PAYLOADS.each do |name|
+          path = v4_payload_path(item_id, name) if defined?(item_id)
+          File.delete(path) if defined?(path) && File.file?(path)
+        end
         raise
       end
 
@@ -509,8 +511,7 @@ module Drale
 
       def v4_replace_item_definition!(item_id, definition, source:, metadata:, content_hash:)
         item = v4_item!(item_id)
-        asset_dir = FS.asset_dir(@lib_root, item['id'])
-        staged = File.join(asset_dir, ".model-#{SecureRandom.uuid}.tmp")
+        staged = File.join(FS.assets_root(@lib_root), ".#{item['id']}-model-#{SecureRandom.uuid}.tmp")
         saved = Compat.save_definition_to_file(definition, staged, purpose: :library_replace, library_path: @lib_root)
         raise 'Не удалось сохранить временный файл замены.' unless saved && File.file?(staged)
 
@@ -528,7 +529,7 @@ module Drale
         ))
         payloads = {
           'model.skp' => File.binread(staged),
-          'preview.png' => File.file?(File.join(asset_dir, 'preview.png')) ? File.binread(File.join(asset_dir, 'preview.png')) : ''.b,
+          'preview.png' => File.file?(v4_payload_path(item['id'], 'preview.png')) ? File.binread(v4_payload_path(item['id'], 'preview.png')) : ''.b,
           'asset.json' => JSON.pretty_generate(manifest)
         }
         replace_v4_asset_payloads!(item_id, payloads)
@@ -539,7 +540,7 @@ module Drale
 
       def v4_update_manifest_item!(item_id, now = FS.now_iso8601)
         item = v4_item!(item_id)
-        manifest_path = File.join(FS.asset_dir(@lib_root, item['id']), 'asset.json')
+        manifest_path = v4_payload_path(item['id'], 'asset.json')
         before = File.binread(manifest_path)
         manifest = v4_manifest_from_item(item)
         yield manifest
@@ -558,17 +559,22 @@ module Drale
 
       def v4_delete_item!(item_id)
         item = v4_item!(item_id)
-        source = FS.asset_dir(@lib_root, item['id'])
         txid = SecureRandom.uuid
-        destination = FS.trash_path(@lib_root, txid, item['id'])
-        FileUtils.mkdir_p(File.dirname(destination))
-        File.rename(source, destination)
+        moved = []
+        TRANSACTION_PAYLOADS.each do |name|
+          source = v4_payload_path(item['id'], name)
+          next unless File.file?(source)
+
+          destination = FS.trash_path(@lib_root, txid, File.basename(source))
+          FileUtils.mkdir_p(File.dirname(destination))
+          File.rename(source, destination)
+          moved << [source, destination]
+        end
         begin
           reload_index!
           persist_v4_catalog!
         rescue StandardError
-          FileUtils.mkdir_p(File.dirname(source))
-          File.rename(destination, source) if File.directory?(destination)
+          moved.reverse_each { |source, destination| File.rename(destination, source) if File.file?(destination) }
           reload_index!
           raise
         end
@@ -655,6 +661,7 @@ module Drale
 
         txid = SecureRandom.uuid
         FileUtils.mkdir_p(FS.transactions_root(@lib_root))
+        FileUtils.mkdir_p(FS.transaction_path(@lib_root, txid))
         catalog_path = FS.catalog_path(@lib_root)
         catalog_existed = File.file?(catalog_path)
         catalog_bytes = catalog_existed ? File.binread(catalog_path) : nil
@@ -764,8 +771,7 @@ module Drale
         root = FS.transactions_root(@lib_root)
         return unless File.directory?(root)
 
-        Dir.glob(File.join(root, '*.json')).sort.each { |journal| recover_transaction_file!(journal, record_recovery: true) }
-        prune_transaction_snapshots!
+        Dir.glob(File.join(root, '*', 'transaction.json')).sort.each { |journal| recover_transaction_file!(journal, record_recovery: true) }
       end
 
       def recover_transaction_file!(journal_path, record_recovery: false)
@@ -843,7 +849,6 @@ module Drale
         root = transaction_root_path(transaction)
         FileUtils.rm_rf(root) if File.directory?(root)
         File.delete(transaction['journal_path']) if transaction['journal_path'] && File.file?(transaction['journal_path'])
-        prune_transaction_snapshots!
       end
 
       def record_successful_recovery!(transaction)
@@ -853,20 +858,6 @@ module Drale
           'operation' => transaction['operation'],
           'phase' => transaction['state']
         }
-      end
-
-      def prune_transaction_snapshots!
-        root = FS.snapshots_root(@lib_root)
-        return unless File.directory?(root)
-
-        pending = Dir.glob(File.join(FS.transactions_root(@lib_root), '*.json')).filter_map do |journal|
-          transaction = JSON.parse(File.read(journal, encoding: 'UTF-8'))
-          transaction_snapshot_path(transaction) if transaction['version'] == TRANSACTION_VERSION && transaction['id'].to_s.match?(UUID_PATTERN)
-        rescue StandardError
-          nil
-        end
-        snapshots = Dir.glob(File.join(root, '*.json')).reject { |path| pending.include?(path) }.sort_by { |path| File.mtime(path) }.reverse
-        snapshots.drop(20).each { |path| File.delete(path) }
       end
 
       def validate_transaction!(transaction)
@@ -897,17 +888,17 @@ module Drale
       end
 
       def transaction_journal_path(txid)
-        FS.transaction_path(@lib_root, "#{txid}.json")
+        FS.transaction_path(@lib_root, txid, 'transaction.json')
       end
 
       def transaction_snapshot_path(transaction)
-        FS.snapshot_path(@lib_root, "#{transaction.fetch('id')}-library.json")
+        FS.transaction_path(@lib_root, transaction.fetch('id'), 'library.json.before')
       end
 
       def transaction_payload_path(item_id, name)
         raise ArgumentError, 'Invalid transaction payload name.' unless TRANSACTION_PAYLOADS.include?(name)
 
-        File.join(FS.asset_dir(@lib_root, item_id), name)
+        v4_payload_path(item_id, name)
       end
 
       def transaction_backup_path(transaction, name)
@@ -916,6 +907,16 @@ module Drale
 
       def transaction_staged_path(transaction, name)
         "#{transaction_payload_path(transaction['item_id'], name)}.new-#{transaction['id']}"
+      end
+
+      def v4_payload_path(item_id, name)
+        rel = case name
+              when 'model.skp' then FS.asset_model_rel_path(item_id)
+              when 'preview.png' then FS.asset_preview_rel_path(item_id)
+              when 'asset.json' then FS.asset_metadata_rel_path(item_id)
+              else raise ArgumentError, 'Invalid v4 payload name.'
+              end
+        FS.to_full_path(@lib_root, rel)
       end
 
       def journal_contains_path_field?(value)
@@ -956,6 +957,7 @@ module Drale
 
       def load_or_initialize_index
         return load_v4_index if @format == :v4
+        return default_index if @format == :legacy_read_only
 
         path = FS.index_path(@lib_root)
         return initialize_new_index(path) unless File.file?(path)
@@ -969,12 +971,7 @@ module Drale
       end
 
       def detect_format
-        has_v3_index = File.file?(FS.index_path(@lib_root))
-        if has_v3_index
-          return :v4 if complete_v4_catalog_activation? || v4_asset_tree?
-
-          return :v3
-        end
+        return :legacy_read_only if File.file?(FS.index_path(@lib_root)) && !complete_v4_catalog_activation? && !v4_asset_tree?
 
         return :v4 if declared_v4_catalog?
         return :v4 if File.directory?(FS.assets_root(@lib_root))
@@ -986,11 +983,10 @@ module Drale
         root = FS.assets_root(@lib_root)
         return false unless File.directory?(root)
 
-        Dir.glob(File.join(root, '*')).any? do |asset_dir|
-          next false unless File.directory?(asset_dir)
-
-          manifest = read_asset_manifest(asset_dir)
-          asset, = normalize_v4_asset(File.basename(asset_dir), manifest, asset_dir)
+        Dir.glob(File.join(root, '*.json')).any? do |manifest_path|
+          id = File.basename(manifest_path, '.json')
+          manifest = read_asset_manifest(id)
+          asset, = normalize_v4_asset(id, manifest)
           !asset.nil?
         rescue StandardError
           false
@@ -1037,13 +1033,11 @@ module Drale
         root = FS.assets_root(@lib_root)
         return [assets, recovery] unless File.directory?(root)
 
-        Dir.glob(File.join(root, '*')).sort.each do |asset_dir|
-          next unless File.directory?(asset_dir)
-
-          directory_id = File.basename(asset_dir)
+        Dir.glob(File.join(root, '*.json')).sort.each do |manifest_path|
+          directory_id = File.basename(manifest_path, '.json')
           begin
-            manifest = read_asset_manifest(asset_dir)
-            asset, reason = normalize_v4_asset(directory_id, manifest, asset_dir)
+            manifest = read_asset_manifest(directory_id)
+            asset, reason = normalize_v4_asset(directory_id, manifest)
             if asset
               assets << asset
             else
@@ -1057,18 +1051,18 @@ module Drale
         [assets.sort_by { |asset| asset['id'] }, recovery.sort_by { |entry| entry['id'] }]
       end
 
-      def read_asset_manifest(asset_dir)
-        parsed = JSON.parse(File.read(File.join(asset_dir, 'asset.json'), encoding: 'UTF-8'))
+      def read_asset_manifest(asset_id)
+        parsed = JSON.parse(File.read(v4_payload_path(asset_id, 'asset.json'), encoding: 'UTF-8'))
         raise ArgumentError, 'asset.json must contain an object.' unless parsed.is_a?(Hash)
 
         parsed
       end
 
-      def normalize_v4_asset(directory_id, manifest, asset_dir)
-        return [nil, 'asset directory is not a UUID'] unless directory_id.match?(UUID_PATTERN)
-        return [nil, 'manifest id does not match asset directory'] unless manifest['id'].to_s == directory_id
+      def normalize_v4_asset(asset_id, manifest)
+        return [nil, 'asset id is not a UUID'] unless asset_id.match?(UUID_PATTERN)
+        return [nil, 'manifest id does not match asset filename'] unless manifest['id'].to_s == asset_id
         return [nil, 'asset_version must be integer 1'] unless manifest['asset_version'].is_a?(Integer) && manifest['asset_version'] == 1
-        return [nil, 'model.skp is missing'] unless File.file?(File.join(asset_dir, 'model.skp'))
+        return [nil, 'model is missing'] unless File.file?(v4_payload_path(asset_id, 'model.skp'))
 
         created_at = manifest['created_at']
         updated_at = manifest['updated_at']
@@ -1080,7 +1074,7 @@ module Drale
         end
 
         [{
-          'id' => directory_id,
+          'id' => asset_id,
           'name' => FS.normalize_display_name(manifest['name']),
           'category' => FS.normalize_category_name(manifest['category']),
           'description' => normalize_description(manifest['description']),
@@ -1089,8 +1083,8 @@ module Drale
           'created_at' => created_at,
           'updated_at' => updated_at,
           'last_used_at' => manifest['last_used_at'],
-          'skp_rel_path' => FS.asset_model_rel_path(directory_id),
-          'thumb_rel_path' => FS.asset_preview_rel_path(directory_id),
+          'skp_rel_path' => FS.asset_model_rel_path(asset_id),
+          'thumb_rel_path' => FS.asset_preview_rel_path(asset_id),
           'source' => manifest['source'].to_s.empty? ? 'component' : manifest['source'].to_s,
           'file_size_bytes' => normalize_integer(manifest['file_size_bytes']),
           'bbox_xyz' => normalize_bbox(manifest['bbox_xyz']),
@@ -1139,7 +1133,7 @@ module Drale
         assets.map do |asset|
           {
             'id' => asset['id'],
-            'asset_rel_path' => File.join(FS::ASSETS_DIR, asset['id']).tr('\\', '/'),
+            'asset_rel_path' => FS.asset_metadata_rel_path(asset['id']),
             'updated_at' => asset['updated_at']
           }
         end.sort_by { |asset| asset['id'] }
@@ -1349,7 +1343,7 @@ module Drale
       end
 
       def ensure_legacy_mutation!
-        raise ArgumentError, 'v4 libraries are read-only.' if @format == :v4
+        raise ArgumentError, 'Legacy libraries are read-only; create a new library folder.' if @format == :legacy_read_only
       end
 
       def valid_timestamp?(value)

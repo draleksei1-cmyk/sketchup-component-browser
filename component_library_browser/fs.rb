@@ -14,7 +14,7 @@ module Drale
 
       FORMAT_VERSION = 4
       ASSETS_DIR = 'assets'.freeze
-      INTERNAL_DIR = '.clb'.freeze
+      TRASH_DIR = 'trash'.freeze
       CATALOG_FILENAME = 'library.json'.freeze
 
       INVALID_FILENAME_CHARS = /[<>:"\/\\|?*\x00-\x1F]/.freeze
@@ -40,56 +40,40 @@ module Drale
         File.join(lib_root, ASSETS_DIR)
       end
 
-      def asset_dir(lib_root, asset_id)
-        to_full_path(lib_root, [ASSETS_DIR, asset_id.to_s].join('/'))
-      end
-
       def asset_model_rel_path(asset_id)
-        asset_rel_path(asset_id, 'model.skp')
+        asset_rel_path(asset_id, '.skp')
       end
 
       def asset_preview_rel_path(asset_id)
-        asset_rel_path(asset_id, 'preview.png')
+        asset_rel_path(asset_id, '.png')
       end
 
       def asset_metadata_rel_path(asset_id)
-        asset_rel_path(asset_id, 'asset.json')
+        asset_rel_path(asset_id, '.json')
       end
 
       def catalog_path(lib_root)
         File.join(lib_root, CATALOG_FILENAME)
       end
 
-      def internal_root(lib_root)
-        internal_path(lib_root)
-      end
-
       def transactions_root(lib_root)
-        internal_path(lib_root, 'transactions')
-      end
-
-      def snapshots_root(lib_root)
-        internal_path(lib_root, 'snapshots')
+        trash_root(lib_root)
       end
 
       def trash_root(lib_root)
-        internal_path(lib_root, 'trash')
+        to_full_path(lib_root, TRASH_DIR)
       end
 
       def transaction_path(lib_root, transaction_id, *segments)
-        internal_path(lib_root, 'transactions', transaction_id.to_s, *segments)
+        trash_path(lib_root, transaction_id.to_s, *segments)
       end
 
       def snapshot_path(lib_root, *segments)
-        internal_path(lib_root, 'snapshots', *segments)
+        trash_path(lib_root, *segments)
       end
 
       def trash_path(lib_root, *segments)
-        internal_path(lib_root, 'trash', *segments)
-      end
-
-      def internal_path(lib_root, *segments)
-        to_full_path(lib_root, File.join(INTERNAL_DIR, *segments.map(&:to_s)))
+        to_full_path(lib_root, File.join(TRASH_DIR, *segments.map(&:to_s)))
       end
 
       def categories_root(lib_root)
@@ -105,8 +89,7 @@ module Drale
       end
 
       def ensure_library_structure(lib_root)
-        FileUtils.mkdir_p(categories_root(lib_root))
-        FileUtils.mkdir_p(previews_root(lib_root))
+        FileUtils.mkdir_p(assets_root(lib_root))
       end
 
       def normalize_category_name(value)
@@ -281,8 +264,11 @@ module Drale
         File.expand_path(File.join(File.realpath(candidate), *unresolved_segments))
       end
 
-      def asset_rel_path(asset_id, filename)
-        [ASSETS_DIR, asset_id.to_s, filename].join('/')
+      def asset_rel_path(asset_id, extension)
+        id = asset_id.to_s
+        raise ArgumentError, 'Asset id must be a UUID.' unless id.match?(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i)
+
+        [ASSETS_DIR, "#{id}#{extension}"].join('/')
       end
     end
   end
