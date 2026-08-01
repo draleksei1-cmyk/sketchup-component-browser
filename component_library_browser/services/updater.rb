@@ -172,7 +172,7 @@ module Drale
       end
 
       def pending_update_manifest_path
-        File.join(package_dir, '.pending_update.json')
+        File.join(pending_update_root, 'pending_update.json')
       end
 
       def apply_pending_update(manifest_path: pending_update_manifest_path, install: nil)
@@ -196,9 +196,8 @@ module Drale
       rescue Errno::EACCES, Errno::EPERM, Errno::EBUSY => error
         { 'success' => false, 'restart_required' => true, 'error' => error.message }
       rescue StandardError => error
-        clear_pending_update!(manifest_path) if defined?(manifest_path) && manifest_path
-        Logger.warn("Discarded invalid pending update: #{error.message}")
-        { 'success' => false, 'discarded' => true, 'error' => error.message }
+        Logger.warn("Pending update preserved for retry: #{error.message}")
+        { 'success' => false, 'retry_required' => true, 'error' => error.message }
       end
 
       def validate_staged_package!(stage_root, expected_version: nil)
@@ -234,7 +233,8 @@ module Drale
       def persist_pending_update!(rbz_path, checksum_path, stage_dir, version)
         manifest_path = pending_update_manifest_path
         pending_root = pending_update_root(manifest_path)
-        FileUtils.rm_rf(pending_root) if File.directory?(pending_root)
+        raise VerificationError, 'A pending update already exists; restart SketchUp to apply it first' if File.exist?(manifest_path) || File.directory?(pending_root)
+
         FileUtils.mkdir_p(pending_root)
         asset_name = File.basename(rbz_path)
         checksum_name = File.basename(checksum_path)
@@ -250,8 +250,10 @@ module Drale
         pending_root
       end
 
-      def pending_update_root(manifest_path)
-        File.join(File.dirname(File.expand_path(manifest_path)), '.pending_update')
+      def pending_update_root(manifest_path = nil)
+        return File.join(package_root, ".#{PACKAGE_NAME}_update") unless manifest_path
+
+        File.dirname(File.expand_path(manifest_path))
       end
 
       def pending_file!(pending_root, name)

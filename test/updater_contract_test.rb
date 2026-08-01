@@ -149,10 +149,12 @@ class UpdaterContractTest < Minitest::Test
     end
   end
 
-  def test_pending_update_applies_validated_staging_and_removes_manifest
+  def test_pending_update_staging_survives_target_package_move_and_cleans_up_after_success
     Dir.mktmpdir('pending-update-') do |dir|
       package = File.join(dir, 'component_library_browser')
-      pending_root = File.join(package, '.pending_update')
+      FileUtils.mkdir_p(package)
+      File.write(File.join(package, 'old.rb'), 'old package')
+      pending_root = File.join(dir, '.component_library_browser_update')
       staged = File.join(pending_root, 'staged')
       %w[icons ui tools services].each { |name| FileUtils.mkdir_p(File.join(staged, 'component_library_browser', name)) }
       File.write(File.join(staged, 'component_library_browser.rb'), '# loader')
@@ -162,11 +164,16 @@ class UpdaterContractTest < Minitest::Test
       File.binwrite(rbz, 'safe pending archive')
       digest = Digest::SHA256.file(rbz).hexdigest
       File.write(File.join(pending_root, 'release.rbz.sha256'), "#{digest}  release.rbz\n")
-      manifest = File.join(package, '.pending_update.json')
+      manifest = File.join(pending_root, 'pending_update.json')
       File.write(manifest, JSON.generate('version' => '0.3.0', 'asset_name' => 'release.rbz', 'checksum_name' => 'release.rbz.sha256', 'stage_name' => 'staged'))
 
       applied = false
-      result = Updater.apply_pending_update(manifest_path: manifest, install: ->(validated, _workspace) { applied = validated['version'] == '0.3.0' })
+      result = Updater.apply_pending_update(manifest_path: manifest, install: lambda do |validated, _workspace|
+        FileUtils.mv(package, "#{package}.previous")
+        assert File.file?(File.join(staged, 'component_library_browser', 'VERSION')), 'staged package must remain outside moved target package'
+        FileUtils.cp_r(validated.fetch('package_dir'), package)
+        applied = validated['version'] == '0.3.0'
+      end)
 
       assert result['success']
       assert applied
@@ -175,17 +182,19 @@ class UpdaterContractTest < Minitest::Test
     end
   end
 
-  def test_invalid_pending_update_is_discarded_without_install
+  def test_invalid_pending_update_is_preserved_without_install_for_retry
     Dir.mktmpdir('pending-update-') do |dir|
       package = File.join(dir, 'component_library_browser')
       FileUtils.mkdir_p(package)
-      manifest = File.join(package, '.pending_update.json')
+      pending_root = File.join(dir, '.component_library_browser_update')
+      FileUtils.mkdir_p(pending_root)
+      manifest = File.join(pending_root, 'pending_update.json')
       File.write(manifest, '{"version":"0.3.0","stage_name":"../outside"}')
 
       result = Updater.apply_pending_update(manifest_path: manifest, install: ->(*) { flunk 'invalid pending update must not install' })
 
-      assert result['discarded']
-      refute File.exist?(manifest)
+      assert result['retry_required']
+      assert File.exist?(manifest)
     end
   end
 end
