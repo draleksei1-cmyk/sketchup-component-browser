@@ -157,4 +157,25 @@ class StaticUiContractTest < Minitest::Test
     assert_match(/selected_category\.to_s == ADD_CATEGORY_OPTION.*?current_category = new_category.*?prompt_save_metadata/m, main)
     assert_includes main, 'description: description'
   end
+
+  def test_bootstrap_refresh_and_legacy_root_actions_use_registered_ruby_callbacks
+    assert_match(/ruby\("ready"\)/, js)
+    assert_match(/ruby\("refresh_index_only"\)/, js)
+    assert_match(/add_action_callback\('create_new_library_root'\)/, main)
+    assert_match(/create_new_library_root/, main)
+    assert_includes main, 'same_path_ci?(selected_root, current_root)'
+    assert_includes main, 'Новая папка библиотеки должна быть пустой.'
+  end
+
+  def test_overflow_menu_binds_each_existing_command_callback
+    %w[scan_library_folder export_pack import_pack].each { |callback| assert_match(/ruby\(\"#{callback}\"\)/, js) }
+    assert_match(/action === "settings".*?openSettings/m, js)
+    assert_match(/onOverflowCommand/, js)
+  end
+
+  def test_model_save_sends_definition_guid_as_a_json_object
+    assert_match(/modeltab_save_to_library[^\n]+definition_guid/, js)
+    assert_match(/save_in_model_definition/, main)
+    assert_match(/parse_payload\(payload\).*?data\['definition_guid'\]/m, main)
+  end
 end

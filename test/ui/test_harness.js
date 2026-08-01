@@ -63,6 +63,14 @@
       if (document.activeElement !== card) throw new Error("drawer close did not restore card focus");
       var overflow = document.getElementById("library-overflow");
       overflow.click();
+      document.querySelector('[data-command="scan_library_folder"]').click();
+      if (!callbacks.some(function (entry) { return entry.name === "scan_library_folder"; })) throw new Error("overflow scan callback missing");
+      overflow.click();
+      document.querySelector('[data-command="export_pack"]').click();
+      if (!callbacks.some(function (entry) { return entry.name === "export_pack"; })) throw new Error("overflow export callback missing");
+      overflow.click();
+      document.querySelector('[data-command="import_pack"]').click();
+      if (!callbacks.some(function (entry) { return entry.name === "import_pack"; })) throw new Error("overflow import callback missing");
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       if (!document.getElementById("library-overflow-menu").hidden || document.activeElement !== overflow) throw new Error("Escape did not close overflow menu");
       var arrayState = Object.assign({}, window.__clbFixture, { array_pick_mode: true, array_pick_message: "Выберите источник для массива" });
@@ -74,7 +82,8 @@
       var modelCard = document.querySelector(".library-card");
       modelCard.click();
       document.getElementById("primary-insert").click();
-      if (!callbacks.some(function (entry) { return entry.name === "modeltab_save_to_library" && String(entry.payload).indexOf("def-001") !== -1; })) throw new Error("model insert did not use definition_guid callback");
+      var modelSave = callbacks.find(function (entry) { return entry.name === "modeltab_save_to_library"; });
+      if (!modelSave || JSON.parse(modelSave.payload).definition_guid !== "def-001") throw new Error("model save did not send definition_guid JSON payload");
       document.getElementById("drawer-replace").click();
       if (!callbacks.some(function (entry) { return entry.name === "replace_selection_model" && String(entry.payload).indexOf("def-001") !== -1; })) throw new Error("model replace did not use definition_guid callback");
       window.ComponentLibrary.setState(Object.assign({}, window.__clbFixture, { scope: "all", search: "" }));

@@ -2201,6 +2201,10 @@ menu.add_item(@commands[:open_log])
       dialog.add_action_callback('open_settings') do |_action_context, _payload|
         open_settings
       end
+
+      dialog.add_action_callback('create_new_library_root') do |_action_context, _payload|
+        create_new_library_root
+      end
     end
 
     def update_item_metadata_from_file(item, deep: false)
