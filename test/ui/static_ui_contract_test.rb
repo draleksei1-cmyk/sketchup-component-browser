@@ -157,6 +157,16 @@ class StaticUiContractTest < Minitest::Test
     refute_includes settings_binding, 'change_library_root'
   end
 
+  def test_card_size_scale_is_compact_and_the_settings_control_matches_icon_action_geometry
+    assert_includes css, '.cards-grid{grid-template-columns:repeat(auto-fill,minmax(176px,1fr))}'
+    assert_includes css, '.cards-grid.size-small{grid-template-columns:repeat(auto-fill,minmax(144px,1fr))}'
+    assert_includes css, '.cards-grid.size-large{grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}'
+
+    assert_match(/id=["']category-add["']/, html)
+    assert_includes css, '#category-add,.rail-settings-button{width:32px;height:32px'
+    assert_includes css, '#category-add img,.rail-settings-button img{width:18px;height:18px'
+  end
+
   def test_ux_pass_has_inline_placement_controls_and_validated_rotation_step
     assert_match(/class=["']placement-option["'][^>]*>\s*<input id=["']opt-surface["']/, html)
     assert_match(/id=["']opt-random-step["'][^>]*type=["']number["'][^>]*min=["']1["'][^>]*max=["']360["'][^>]*value=["']90["']/, html)

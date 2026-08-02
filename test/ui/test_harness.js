@@ -47,6 +47,13 @@
       card.click();
       if (document.getElementById("details-drawer").hidden) throw new Error("card did not open drawer");
       if (!card.classList.contains("selected")) throw new Error("selected card state is missing");
+      document.querySelector('[data-size="small"]').click();
+      if (!document.getElementById("cards-grid").classList.contains("size-small")) throw new Error("small card size was not applied");
+      if (!document.querySelector('[data-size="small"]').classList.contains("active")) throw new Error("small card size label is not active");
+      document.getElementById("settings-btn").click();
+      if (document.getElementById("settings-backdrop").hidden) throw new Error("settings button did not open the settings dialog");
+      if (callbacks.some(function (entry) { return entry.name === "change_library_root"; })) throw new Error("settings button opened the folder chooser");
+      document.getElementById("settings-close").click();
       var step = document.getElementById("opt-random-step");
       if (step.value !== "90" || !step.disabled) throw new Error("rotation step default/disabled state is wrong");
       document.getElementById("opt-random").click();

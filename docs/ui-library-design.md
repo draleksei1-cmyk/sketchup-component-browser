@@ -4,6 +4,8 @@ The library is a restrained three-part workspace: a fixed 200px navigation rail,
 
 Cards deliberately show only preview, name, category, and at most two tags. Selecting a card opens the drawer; double-clicking preserves the direct insert action. Favorite and delete are not card controls. Delete remains available only through the card context menu, which calls the existing Ruby callback and therefore retains its native confirmation.
 
+The card-size switch keeps the default medium density compact: `S` uses a 144px minimum card width, `M` uses 176px, and `L` uses 260px. The category action and the bottom-left settings action use the same 32px icon-button geometry with an 18px canonical SVG.
+
 ## Action inventory
 
 | Existing action / callback | New location |
