@@ -209,12 +209,12 @@ class UpdaterContractTest < Minitest::Test
       )
       assert status.success?, "RBZ fixture build failed:\n#{stdout}\n#{stderr}"
 
-      rbz = File.join(output, 'component-library-browser-0.2.2.rbz')
+      rbz = File.join(output, 'component-library-browser-0.2.3.rbz')
       stage = File.join(dir, 'staged')
       Updater.send(:extract_rbz!, rbz, stage)
 
-      validated = Updater.validate_staged_package!(stage, expected_version: '0.2.2')
-      assert_equal '0.2.2', validated.fetch('version')
+      validated = Updater.validate_staged_package!(stage, expected_version: '0.2.3')
+      assert_equal '0.2.3', validated.fetch('version')
       assert File.file?(File.join(stage, 'component_library_browser', 'ui', 'app.js'))
     end
   end
@@ -246,14 +246,14 @@ class UpdaterContractTest < Minitest::Test
       _stdout, stderr, status = Open3.capture3('powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-OutputDirectory', output, '-SelfTest')
       assert status.success?, stderr
 
-      rbz = File.join(output, 'component-library-browser-0.2.2.rbz')
+      rbz = File.join(output, 'component-library-browser-0.2.3.rbz')
       checksum = "#{Digest::SHA256.file(rbz).hexdigest}  #{File.basename(rbz)}"
       update = {
         'available' => true,
-        'latest_version' => '0.2.2',
+        'latest_version' => '0.2.3',
         'asset_name' => File.basename(rbz),
-        'rbz_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.2.2/component-library-browser-0.2.2.rbz',
-        'checksum_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.2.2/component-library-browser-0.2.2.rbz.sha256'
+        'rbz_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.2.3/component-library-browser-0.2.3.rbz',
+        'checksum_url' => 'https://github.com/draleksei1-cmyk/sketchup-component-browser/releases/download/v0.2.3/component-library-browser-0.2.3.rbz.sha256'
       }
       installed = nil
       progress = []
@@ -268,7 +268,7 @@ class UpdaterContractTest < Minitest::Test
       result = Updater.download_and_apply_update(update: update, http_get: http_get, on_status: ->(text) { progress << text })
 
       assert result['success']
-      assert_equal '0.2.2', installed.first.fetch('version')
+      assert_equal '0.2.3', installed.first.fetch('version')
       assert_includes progress, 'Загрузка обновления…'
       assert_includes progress, 'Проверка контрольной суммы…'
       assert_includes progress, 'Безопасная распаковка и проверка…'
