@@ -289,4 +289,17 @@ class StaticUiContractTest < Minitest::Test
     refute_includes success_branch, 'restore_update_dialog_controls'
     refute_includes restart_branch, 'restore_update_dialog_controls'
   end
+
+  def test_menu_and_settings_show_the_single_package_version_source
+    version = File.read(File.join(ROOT, 'component_library_browser', 'VERSION'), encoding: 'UTF-8').strip
+    loader = File.read(File.join(ROOT, 'component_library_browser.rb'), encoding: 'UTF-8')
+
+    assert_match(/VERSION_FILE = File\.join\(File\.dirname\(__FILE__\), 'component_library_browser', 'VERSION'\)/, loader)
+    assert_match(/EXTENSION_VERSION =.*File\.read\(VERSION_FILE\)\.strip/m, loader)
+    assert_includes main, 'MENU_ROOT = "\\u0411\\u0438\\u0431\\u043b\\u0438\\u043e\\u0442\\u0435\\u043a\\u0430 \\u043a\\u043e\\u043c\\u043f\\u043e\\u043d\\u0435\\u043d\\u0442\\u043e\\u0432 v#{EXTENSION_VERSION}"'
+    assert_includes main, "'extension_version' => EXTENSION_VERSION"
+    refute_includes main, "v#{version}", 'menu and dialog must not duplicate the current version literal'
+    assert_match(/id=["']settings-version["']/, html)
+    assert_includes js, 'state.extension_version'
+  end
 end

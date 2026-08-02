@@ -137,8 +137,7 @@ module Drale
       def apply_and_reload
         result = download_and_apply_update
         if result && result['success']
-          UI.messagebox("Update v#{result['version']} installed. Reloading Ruby code now.")
-          reload_plugin!
+          UI.messagebox("Update v#{result['version']} installed. Restart SketchUp to load the new code.")
         elsif result && result['restart_required']
           UI.messagebox("Update is safely staged at:\n#{result['staged_path']}\n\nRestart SketchUp to complete it.", MB_MULTILINE)
         elsif result && result['error']

@@ -29,6 +29,8 @@ module Drale
   module ComponentLibraryBrowser
     extend self
 
+    EXTENSION_VERSION = File.read(File.join(__dir__, 'VERSION'), encoding: 'UTF-8').strip.freeze unless const_defined?(:EXTENSION_VERSION)
+
     PREFS_NAMESPACE = 'ComponentLibraryBrowser'.freeze
     PREFS_LIB_ROOT_KEY = 'lib_root'.freeze
     PREFS_PINNED_CATEGORIES_KEY = 'pinned_categories'.freeze
@@ -39,7 +41,7 @@ module Drale
     ARRAY_ATTR_DICTIONARY = 'ComponentLibraryBrowser'.freeze
     ARRAY_ATTR_ID_KEY = 'array_id'.freeze
 
-    MENU_ROOT = "\u0411\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0430 \u043a\u043e\u043c\u043f\u043e\u043d\u0435\u043d\u0442\u043e\u0432".freeze
+    MENU_ROOT = "\u0411\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0430 \u043a\u043e\u043c\u043f\u043e\u043d\u0435\u043d\u0442\u043e\u0432 v#{EXTENSION_VERSION}".freeze
     TOOLBAR_NAME = "\u0411\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0430 \u043a\u043e\u043c\u043f\u043e\u043d\u0435\u043d\u0442\u043e\u0432".freeze
     CONTEXT_MENU_TEXT = "\u0414\u043e\u0431\u0430\u0432\u0438\u0442\u044c \u0432 \u0431\u0438\u0431\u043b\u0438\u043e\u0442\u0435\u043a\u0443...".freeze
     ADD_CATEGORY_OPTION = "\u002b \u041a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u044f...".freeze
@@ -999,8 +1001,7 @@ module Drale
     def install_update_from_dialog(dialog, update)
       result = Updater.download_and_apply_update(update: update, on_status: ->(text) { set_update_dialog_status(dialog, text) })
       if result['success']
-        set_update_dialog_status(dialog, 'Обновление установлено. Перезагрузка плагина…')
-        Updater.send(:reload_plugin!)
+        finish_update_install(dialog)
       elsif result['restart_required']
         set_update_dialog_status(dialog, 'Обновление подготовлено. Требуется перезапуск SketchUp.')
       else
@@ -1010,6 +1011,15 @@ module Drale
     rescue StandardError => error
       set_update_dialog_status(dialog, "Ошибка обновления: #{error.message}")
       restore_update_dialog_controls(dialog)
+    end
+
+    def finish_update_install(dialog)
+      message = 'Обновление установлено. Перезапустите SketchUp.'
+      Sketchup.status_text = message
+      set_update_dialog_status(dialog, message)
+      @update_installing = false
+      @update_dialog = nil if @update_dialog.equal?(dialog)
+      dialog.close
     end
 
     def restore_update_dialog_controls(dialog)
@@ -2544,6 +2554,7 @@ menu.add_item(@commands[:open_log])
         'recent_limit' => RECENT_LIMIT,
         'insert_options' => read_insert_options,
         'status_text' => @status_line.to_s,
+        'extension_version' => EXTENSION_VERSION,
         'heavy_faces_threshold' => read_heavy_threshold,
         'focus_item_id' => @focus_item_id,
         'array_pick_mode' => !!@array_library_pick_mode,

@@ -286,6 +286,14 @@ class UpdaterContractTest < Minitest::Test
     assert_match(/up to date/i, result.fetch('message'))
   end
 
+  def test_legacy_update_entrypoint_keeps_successful_installs_restart_only
+    source = File.read(File.expand_path('../component_library_browser/services/updater.rb', __dir__), encoding: 'UTF-8')
+    method = source[source.index('def apply_and_reload'), source.index('def verify_checksum!') - source.index('def apply_and_reload')]
+
+    assert_includes method, 'Restart SketchUp to load the new code.'
+    refute_includes method, 'reload_plugin!'
+  end
+
   def test_download_error_is_reported_to_the_progress_callback
     progress = []
     update = {
