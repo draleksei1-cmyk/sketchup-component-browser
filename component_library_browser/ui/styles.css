@@ -561,6 +561,13 @@ textarea {
   color: #184c77;
 }
 
+.tag.tag-placement {
+  border-color: #a7c2db;
+  background: #eef6ff;
+  color: #17496f;
+  font-weight: 600;
+}
+
 .pagination-bar {
   border-top: 1px solid var(--line);
   padding-top: 10px;
@@ -686,6 +693,17 @@ textarea {
 .inspector-section h3 {
   margin: 0;
   font-size: 15px;
+}
+
+.placement-section {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.insert-opt-check[hidden] {
+  display: none;
 }
 
 .inspector-preview-wrap {

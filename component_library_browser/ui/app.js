@@ -52,10 +52,29 @@
     replace_selection_model: ["replace_with_model_definition"],
   };
 
+  const PLACEMENT_TYPES = [
+    { value: "free", label: "Свободный объект", short: "" },
+    { value: "ground", label: "На земле", short: "Земля" },
+    { value: "surface", label: "На поверхности", short: "Поверхность" },
+    { value: "wall", label: "На стене", short: "Стена" },
+    { value: "ceiling", label: "Потолочный", short: "Потолок" },
+    { value: "opening", label: "В проёме", short: "Проём" },
+  ];
+
+  const PLACEMENT_ANCHORS = [
+    { value: "center_bottom", label: "Центр снизу" },
+    { value: "corner_lb", label: "Левый нижний угол" },
+    { value: "corner_rb", label: "Правый нижний угол" },
+    { value: "opening_center", label: "Центр проёма" },
+    { value: "geometric_center", label: "Геометрический центр" },
+    { value: "custom", label: "Пользовательская" },
+  ];
+
   function init() {
     setupErrorForwarding();
     document.addEventListener("contextmenu", (event) => event.preventDefault());
     cacheDom();
+    populatePlacementSelects();
     if (dom.inspectorReplaceFromSelection) {
       dom.inspectorReplaceFromSelection.disabled = false;
       dom.inspectorReplaceFromSelection.removeAttribute("disabled");
@@ -159,6 +178,13 @@
     dom.inspectorTagSuggestions = document.getElementById("inspector-tag-suggestions");
     dom.inspectorTagQuick = document.getElementById("inspector-tag-quick");
     dom.inspectorTags = document.getElementById("inspector-tags");
+
+    dom.placementSection = document.getElementById("placement-section");
+    dom.placementType = document.getElementById("placement-type");
+    dom.placementAnchor = document.getElementById("placement-anchor");
+    dom.placementOffsetZ = document.getElementById("placement-offset-z");
+    dom.placementCutRow = document.getElementById("placement-cut-row");
+    dom.placementCutOpening = document.getElementById("placement-cut-opening");
 
     dom.inspectorInsert = document.getElementById("inspector-insert");
     dom.inspectorBrush = document.getElementById("inspector-brush");
@@ -298,6 +324,22 @@
     dom.inspectorCategory.addEventListener("change", () => saveInspectorFields({ category: dom.inspectorCategory.value }));
     dom.inspectorAddCategory.addEventListener("click", onInspectorAddCategory);
     dom.inspectorDescription.addEventListener("blur", () => saveInspectorFields({ description: dom.inspectorDescription.value }));
+
+    if (dom.placementType) {
+      dom.placementType.addEventListener("change", () => {
+        renderPlacementCutRow();
+        saveInspectorFields({ placement: readPlacementFromUI() });
+      });
+    }
+    if (dom.placementAnchor) {
+      dom.placementAnchor.addEventListener("change", () => saveInspectorFields({ placement: readPlacementFromUI() }));
+    }
+    if (dom.placementOffsetZ) {
+      dom.placementOffsetZ.addEventListener("change", () => saveInspectorFields({ placement: readPlacementFromUI() }));
+    }
+    if (dom.placementCutOpening) {
+      dom.placementCutOpening.addEventListener("change", () => saveInspectorFields({ placement: readPlacementFromUI() }));
+    }
 
     dom.inspectorTagAdd.addEventListener("click", () => addInspectorTag(dom.inspectorTagInput.value));
     dom.inspectorTagInput.addEventListener("input", () => {
@@ -612,12 +654,14 @@
       category: selected.category,
       description: selected.description || "",
       tags: normalizeTags(selected.tags || []),
+      placement: normalizePlacement(selected.placement),
     };
 
     if (Object.prototype.hasOwnProperty.call(changes, "name")) payload.name = String(changes.name || "").trim();
     if (Object.prototype.hasOwnProperty.call(changes, "category")) payload.category = String(changes.category || "").trim();
     if (Object.prototype.hasOwnProperty.call(changes, "description")) payload.description = String(changes.description || "").trim();
     if (Object.prototype.hasOwnProperty.call(changes, "tags")) payload.tags = normalizeTags(changes.tags || []);
+    if (Object.prototype.hasOwnProperty.call(changes, "placement")) payload.placement = normalizePlacement(changes.placement);
 
     if (!payload.name) {
       alert("Введите имя.");
@@ -631,7 +675,74 @@
       return;
     }
 
-    ruby("update_item_fields", payload);
+    const savedViaFields = ruby("update_item_fields", payload);
+
+    // Запасной путь: если основной колбэк не найден, пробуем отдельный колбэк паспорта размещения.
+    // Отсутствие колбэка не роняет UI и не мешает сохранению остальных полей.
+    if (!savedViaFields) {
+      try {
+        ruby("update_item_placement", { id: payload.id, placement: payload.placement });
+      } catch (error) {
+        // Колбэк паспорта размещения необязателен.
+      }
+    }
+  }
+
+  function populatePlacementSelects() {
+    const fill = (control, entries) => {
+      if (!control) return;
+      control.innerHTML = "";
+      entries.forEach((entry) => {
+        const option = document.createElement("option");
+        option.value = entry.value;
+        option.textContent = entry.label;
+        control.appendChild(option);
+      });
+    };
+    fill(dom.placementType, PLACEMENT_TYPES);
+    fill(dom.placementAnchor, PLACEMENT_ANCHORS);
+  }
+
+  function normalizePlacement(raw) {
+    const source = raw && typeof raw === "object" ? raw : {};
+    const typeEntry = PLACEMENT_TYPES.find((entry) => entry.value === source.type);
+    const anchorEntry = PLACEMENT_ANCHORS.find((entry) => entry.value === source.anchor);
+    const offsetRaw = Number(source.offset_z);
+    return {
+      type: typeEntry ? typeEntry.value : "free",
+      anchor: anchorEntry ? anchorEntry.value : "center_bottom",
+      offset_z: Number.isFinite(offsetRaw) && offsetRaw > 0 ? offsetRaw : 0,
+      cut_opening: typeEntry && typeEntry.value === "opening" ? !!source.cut_opening : false,
+    };
+  }
+
+  function renderPlacementEditor(item) {
+    if (!dom.placementType) return;
+    const placement = normalizePlacement(item && item.placement);
+    dom.placementType.value = placement.type;
+    dom.placementAnchor.value = placement.anchor;
+    setControlValue(dom.placementOffsetZ, String(placement.offset_z));
+    dom.placementCutOpening.checked = placement.cut_opening;
+    renderPlacementCutRow();
+  }
+
+  function renderPlacementCutRow() {
+    if (!dom.placementCutRow) return;
+    dom.placementCutRow.hidden = dom.placementType.value !== "opening";
+  }
+
+  function readPlacementFromUI() {
+    return normalizePlacement({
+      type: dom.placementType ? dom.placementType.value : undefined,
+      anchor: dom.placementAnchor ? dom.placementAnchor.value : undefined,
+      offset_z: dom.placementOffsetZ ? Number(dom.placementOffsetZ.value) : 0,
+      cut_opening: dom.placementCutOpening ? !!dom.placementCutOpening.checked : false,
+    });
+  }
+
+  function placementShortLabel(type) {
+    const entry = PLACEMENT_TYPES.find((candidate) => candidate.value === type);
+    return entry && entry.short ? entry.short : "";
   }
 
   function readInsertOptionsFromUI() {
@@ -961,6 +1072,7 @@
       };
 
       renderCardTags(tagsWrap, item);
+      renderPlacementBadge(tagsWrap, item);
 
       card.addEventListener("click", () => {
         if (state.array_pick_mode && item.kind === "library") {
@@ -1025,6 +1137,19 @@
       more.textContent = `+${tags.length - 3}`;
       wrapper.appendChild(more);
     }
+  }
+
+  function renderPlacementBadge(wrapper, item) {
+    if (!wrapper || !item || item.kind === "in_model") return;
+    const placement = normalizePlacement(item.placement);
+    const short = placementShortLabel(placement.type);
+    if (!short) return;
+
+    const badge = document.createElement("span");
+    badge.className = "tag tag-placement";
+    badge.textContent = short;
+    badge.title = "Паспорт размещения";
+    wrapper.appendChild(badge);
   }
 
   function applyTagToSearch(tag) {
@@ -1130,6 +1255,7 @@
     populateInspectorTagSuggestions();
     renderInspectorTags(item.tags || []);
     renderQuickTagSuggestions(dom.inspectorTagInput.value);
+    renderPlacementEditor(item);
 
     dom.inspectorToggleFavorite.textContent = item.favorite ? "★ Убрать из избранного" : "★ В избранное";
     if (dom.inspectorReplaceFromSelection) {

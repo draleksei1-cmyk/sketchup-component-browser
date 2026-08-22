@@ -1,4 +1,7 @@
-﻿module Drale
+﻿require_relative 'placement'
+require_relative 'insert_diagnostics'
+
+module Drale
   module ComponentLibraryBrowser
     module Services
       module Replacer
@@ -6,7 +9,13 @@
 
         # Заменяет выделенные Group/ComponentInstance на target_definition,
         # сохраняя transformation и контекст родительских entities.
-        def replace_selection(target_definition, model = Sketchup.active_model)
+        # Если у обоих элементов совпадает смысловая точка привязки из паспорта
+        # размещения — совмещаются ТОЧКИ ПРИВЯЗКИ, а не оси: новое окно встаёт
+        # в тот же проём даже при разных осях старой и новой модели.
+        #
+        # placement_by_item_id: хэш { item_id => паспорт } для передачи привязок
+        # библиотечных элементов; nil допустим (работает по-старому).
+        def replace_selection(target_definition, model = Sketchup.active_model, target_anchor: nil)
           raise ArgumentError, 'Целевое определение не задано.' unless target_definition
           raise ArgumentError, 'Модель не найдена.' unless model
 
@@ -29,7 +38,7 @@
               parent = entity.parent
               next unless parent.respond_to?(:entities)
 
-              transformation = entity.transformation
+              transformation = Placement.adjusted_transformation(entity, target_definition, target_anchor)
               glued_target = entity.respond_to?(:glued_to) ? entity.glued_to : nil
               entity.erase!
               new_instance = parent.entities.add_instance(target_definition, transformation)
@@ -41,6 +50,10 @@
                   # target definition may not support gluing/cutting
                 end
               end
+
+              # Починка приклейки прорезных: если должен быть приклеен, но не приклеился.
+              Placement.ensure_cutting_glue!(new_instance, target_definition)
+              Services::InsertDiagnostics.log_insert_result(target_definition, new_instance, method: :replace)
               replaced += 1
             end
             model.commit_operation

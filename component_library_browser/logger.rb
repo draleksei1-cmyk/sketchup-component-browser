@@ -16,6 +16,10 @@ module Drale
         write('INFO', message, data)
       end
 
+      # Переключатель отладочного уровня: включать только для диагностики,
+      # в обычной работе отладочные записи в лог не попадают.
+      DEBUG_ENABLED = false
+
       def debug(message, data = nil)
         write('DEBUG', message, data)
       end

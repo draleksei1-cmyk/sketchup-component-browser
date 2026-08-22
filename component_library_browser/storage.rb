@@ -9,7 +9,10 @@ require_relative 'compat'
 module Drale
   module ComponentLibraryBrowser
     class Storage
-      INDEX_VERSION = 3
+      INDEX_VERSION = 4
+
+      PLACEMENT_TYPES = %w[free ground surface wall ceiling opening].freeze
+      PLACEMENT_ANCHORS = %w[center_bottom corner_lb corner_rb opening_center geometric_center custom].freeze
 
       attr_reader :lib_root
 
@@ -124,6 +127,15 @@ module Drale
         item
       end
 
+      # Обновляет паспорт размещения (placement) элемента и сохраняет индекс.
+      def update_item_placement!(item_id, placement)
+        item = require_item!(item_id)
+        item['placement'] = normalize_placement(placement)
+        item['updated_at'] = FS.now_iso8601
+        persist_index!
+        item
+      end
+
       def set_content_hash!(item_id, hash_value)
         item = require_item!(item_id)
         item['content_hash'] = normalize_hash(hash_value)
@@ -164,6 +176,9 @@ module Drale
         item['edges_count'] = normalized_meta['edges_count']
         item['materials_count'] = normalized_meta['materials_count']
         item['content_hash'] = normalize_hash(content_hash)
+        # Паспорт размещения не меняется при замене геометрии, но пере-нормализуем
+        # на случай, если элемент был создан до введения поля placement.
+        item['placement'] = normalize_placement(item['placement'])
         item['updated_at'] = FS.now_iso8601
 
         persist_index!
@@ -257,7 +272,8 @@ module Drale
           'faces_count' => normalized_meta['faces_count'],
           'edges_count' => normalized_meta['edges_count'],
           'materials_count' => normalized_meta['materials_count'],
-          'content_hash' => normalize_hash(content_hash)
+          'content_hash' => normalize_hash(content_hash),
+          'placement' => normalize_placement(nil)
         }
 
         @index['items'] << item
@@ -355,7 +371,8 @@ module Drale
               'faces_count' => existing_item ? normalize_integer(existing_item['faces_count']) : nil,
               'edges_count' => existing_item ? normalize_integer(existing_item['edges_count']) : nil,
               'materials_count' => existing_item ? normalize_integer(existing_item['materials_count']) : nil,
-              'content_hash' => existing_item ? normalize_hash(existing_item['content_hash']) : nil
+              'content_hash' => existing_item ? normalize_hash(existing_item['content_hash']) : nil,
+              'placement' => normalize_placement(existing_item ? existing_item['placement'] : nil)
             }
 
             scanned_items << item
@@ -432,7 +449,8 @@ module Drale
             'faces_count' => normalize_integer(item['faces_count']),
             'edges_count' => normalize_integer(item['edges_count']),
             'materials_count' => normalize_integer(item['materials_count']),
-            'content_hash' => normalize_hash(item['content_hash'])
+            'content_hash' => normalize_hash(item['content_hash']),
+            'placement' => normalize_placement(item['placement'])
           }
         end
 
@@ -569,6 +587,33 @@ module Drale
         value.to_s.encode('UTF-8', invalid: :replace, undef: :replace, replace: '').strip
       rescue StandardError
         ''
+      end
+
+      # Нормализует паспорт размещения (placement). Принимает nil / Hash / мусор,
+      # возвращает валидный Hash; невалидные значения тихо заменяются дефолтными.
+      def normalize_placement(raw)
+        raw = {} unless raw.is_a?(Hash)
+
+        type = raw['type'].to_s.strip.downcase
+        anchor = raw['anchor'].to_s.strip.downcase
+        offset_z = raw['offset_z'].to_f
+        offset_z = 0.0 unless offset_z.finite? && offset_z >= 0.0
+
+        {
+          'type' => PLACEMENT_TYPES.include?(type) ? type : 'free',
+          'anchor' => PLACEMENT_ANCHORS.include?(anchor) ? anchor : 'center_bottom',
+          'offset_z' => offset_z,
+          'cut_opening' => !!raw['cut_opening'],
+          'updated_at' => FS.now_iso8601
+        }
+      rescue StandardError
+        {
+          'type' => 'free',
+          'anchor' => 'center_bottom',
+          'offset_z' => 0.0,
+          'cut_opening' => false,
+          'updated_at' => FS.now_iso8601
+        }
       end
     end
   end
