@@ -204,6 +204,22 @@ module Drale
         item
       end
 
+      # Сохраняет паспорт размещения элемента (оба формата хранилища).
+      def update_item_placement!(item_id, placement)
+        normalized = Services::Placement.normalize(placement)
+        if @format == :v4
+          updated = v4_update_manifest_item!(item_id) { |manifest| manifest['placement'] = normalized }
+          return updated
+        end
+
+        ensure_legacy_mutation!
+        item = require_item!(item_id)
+        item['placement'] = normalized
+        item['updated_at'] = FS.now_iso8601
+        persist_index!
+        item
+      end
+
       def replace_item_definition!(item_id, definition, source:, metadata: nil, content_hash: nil)
         raise ArgumentError, 'Definition is required.' unless definition
         return v4_replace_item_definition!(item_id, definition, source: source, metadata: metadata, content_hash: content_hash) if @format == :v4
@@ -338,7 +354,8 @@ module Drale
           'faces_count' => normalized_meta['faces_count'],
           'edges_count' => normalized_meta['edges_count'],
           'materials_count' => normalized_meta['materials_count'],
-          'content_hash' => normalize_hash(content_hash)
+          'content_hash' => normalize_hash(content_hash),
+          'placement' => Services::Placement.normalize(nil)
         }
 
         @index['items'] << item
@@ -439,7 +456,8 @@ module Drale
               'faces_count' => existing_item ? normalize_integer(existing_item['faces_count']) : nil,
               'edges_count' => existing_item ? normalize_integer(existing_item['edges_count']) : nil,
               'materials_count' => existing_item ? normalize_integer(existing_item['materials_count']) : nil,
-              'content_hash' => existing_item ? normalize_hash(existing_item['content_hash']) : nil
+              'content_hash' => existing_item ? normalize_hash(existing_item['content_hash']) : nil,
+              'placement' => Services::Placement.normalize(existing_item ? existing_item['placement'] : nil)
             }
 
             scanned_items << item
@@ -647,7 +665,8 @@ module Drale
           'source' => item['source'].to_s.empty? ? 'component' : item['source'].to_s,
           'file_size_bytes' => normalize_integer(item['file_size_bytes']), 'bbox_xyz' => normalize_bbox(item['bbox_xyz']),
           'faces_count' => normalize_integer(item['faces_count']), 'edges_count' => normalize_integer(item['edges_count']),
-          'materials_count' => normalize_integer(item['materials_count']), 'content_hash' => normalize_hash(item['content_hash'])
+          'materials_count' => normalize_integer(item['materials_count']), 'content_hash' => normalize_hash(item['content_hash']),
+          'placement' => Services::Placement.normalize(item['placement'])
         }
       end
 
@@ -1165,7 +1184,8 @@ module Drale
           'faces_count' => normalize_integer(manifest['faces_count']),
           'edges_count' => normalize_integer(manifest['edges_count']),
           'materials_count' => normalize_integer(manifest['materials_count']),
-          'content_hash' => normalize_hash(manifest['content_hash'])
+          'content_hash' => normalize_hash(manifest['content_hash']),
+          'placement' => Services::Placement.normalize(manifest['placement'])
         }, nil]
       rescue ArgumentError => error
         [nil, error.message]
@@ -1273,7 +1293,8 @@ module Drale
             'faces_count' => normalize_integer(item['faces_count']),
             'edges_count' => normalize_integer(item['edges_count']),
             'materials_count' => normalize_integer(item['materials_count']),
-            'content_hash' => normalize_hash(item['content_hash'])
+            'content_hash' => normalize_hash(item['content_hash']),
+            'placement' => Services::Placement.normalize(item['placement'])
           }
         end
 

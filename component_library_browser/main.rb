@@ -17,7 +17,9 @@ require_relative 'tools/window_layout_tool'
 require_relative 'array/array_controller'
 require_relative 'array/win_array_controller'
 require_relative 'services/model_definitions'
+require_relative 'services/placement'
 require_relative 'services/replacer'
+require_relative 'services/insert_diagnostics'
 require_relative 'services/metadata'
 require_relative 'services/preview_regenerator'
 require_relative 'services/pack_transfer'
@@ -283,7 +285,15 @@ module Drale
       mark_in_model_items_dirty!
       start_native_brush_loop(definition, item_id: item['id'], continuous: false)
       arm_native_brush_wait_for_insert
-      model.place_component(definition)
+      Services::InsertDiagnostics.log_insert_start(item_id: item['id'], skp_path: skp_path, method: :button)
+      begin
+        model.place_component(definition)
+      rescue StandardError => error
+        Services::InsertDiagnostics.log_insert_result(definition, nil, method: :button)
+        raise
+      end
+      # place_component обычно не возвращает экземпляр — логируем nil-safe результат.
+      Services::InsertDiagnostics.log_insert_result(definition, nil, method: :button)
       @native_brush_loop[:last_place_at] = Time.now.to_f if @native_brush_loop
       true
     rescue StandardError => error
@@ -316,7 +326,15 @@ module Drale
       mark_in_model_items_dirty!
       start_native_brush_loop(definition, item_id: item['id'], continuous: true)
       arm_native_brush_wait_for_insert
-      model.place_component(definition)
+      Services::InsertDiagnostics.log_insert_start(item_id: item['id'], skp_path: skp_path, method: :brush)
+      begin
+        model.place_component(definition)
+      rescue StandardError => error
+        Services::InsertDiagnostics.log_insert_result(definition, nil, method: :brush)
+        raise
+      end
+      # place_component обычно не возвращает экземпляр — логируем nil-safe результат.
+      Services::InsertDiagnostics.log_insert_result(definition, nil, method: :brush)
       @native_brush_loop[:last_place_at] = Time.now.to_f if @native_brush_loop
       push_status_to_dialog('Многократная вставка активна. Кликайте в модели, Esc для выхода.')
       true
@@ -576,7 +594,8 @@ module Drale
         library_path: @storage.lib_root
       )
       definition = ensure_component_definition_for_insert(definition)
-      summary = Services::Replacer.replace_selection(definition, model)
+      # Умная замена: передаём паспорт размещения нового элемента.
+      summary = Services::Replacer.replace_selection(definition, model, target_placement: item['placement'])
       @storage.touch_last_used!(item['id'])
       mark_in_model_items_dirty!
       push_state_to_dialog
@@ -790,6 +809,8 @@ module Drale
       return unless ensure_storage!
 
       result = @storage.edit_item!(data['id'], data)
+      # Паспорт размещения приходит в общем payload — сохраняем отдельным методом.
+      @storage.update_item_placement!(data['id'], data['placement']) if data.key?('placement')
       if result['name_changed']
         UI.messagebox("\u0418\u043c\u044f \u0443\u0436\u0435 \u0435\u0441\u0442\u044c \u0432 \u043a\u0430\u0442\u0435\u0433\u043e\u0440\u0438\u0438.\n\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043e \u043a\u0430\u043a: #{result['final_name']}")
       end
@@ -798,6 +819,20 @@ module Drale
     rescue StandardError => error
       show_error("\u0418\u0437\u043c\u0435\u043d\u0435\u043d\u0438\u0435 \u044d\u043b\u0435\u043c\u0435\u043d\u0442\u0430", error)
       nil
+    end
+
+    # Отдельный колбэк для сохранения только паспорта размещения.
+    def update_item_placement(payload = nil)
+      data = parse_payload(payload)
+      return unless ensure_storage!
+
+      @storage.update_item_placement!(data['id'], data['placement'])
+      Logger.info('Паспорт размещения сохранён', 'item_id' => data['id'].to_s)
+      push_state_to_dialog
+      true
+    rescue StandardError => error
+      show_error('Сохранение размещения', error)
+      false
     end
 
     def regenerate_thumbnail(item_id)
@@ -2237,6 +2272,10 @@ menu.add_item(@commands[:open_log])
 
       dialog.add_action_callback('update_item_fields') do |_action_context, payload|
         update_item_fields(payload)
+      end
+
+      dialog.add_action_callback('update_item_placement') do |_action_context, payload|
+        update_item_placement(payload)
       end
 
       dialog.add_action_callback('delete_item') do |_action_context, item_id|
