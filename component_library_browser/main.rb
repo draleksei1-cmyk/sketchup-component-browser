@@ -227,6 +227,42 @@ module Drale
       nil
     end
 
+    # Автоперенос старой библиотеки в новый формат v4.
+    def migrate_library_to_v4
+      return unless @storage&.legacy_read_only?
+
+      count = @storage.index['items'].length
+      unless yes_no?("Будет создана новая библиотека рядом со старой (старая не изменится).\nЭлементов к переносу: #{count}\n\nПродолжить?")
+        return nil
+      end
+
+      push_status_to_dialog('Перенос библиотеки...')
+      report = @storage.migrate_legacy_to_v4!(
+        progress: proc do |done, total, name|
+          push_status_to_dialog("Перенос: #{done}/#{total} — #{name}")
+        end
+      )
+      # Переключаемся на новую библиотеку
+      configure_storage_root(report['new_root'], prompt_scan: false)
+      push_state_to_dialog
+      msg = "Перенос завершён.\nПеренесено: #{report['migrated']}"
+      msg += "\nПропущено: #{report['skipped']}" if report['skipped'].to_i.positive?
+      msg += "\n\nНовая библиотека: #{report['new_root']}"
+      unless report['errors'].empty?
+        msg += "\n\nОшибки:\n#{report['errors'].first(5).join("\n")}"
+        msg += "\n...и ещё #{report['errors'].length - 5}" if report['errors'].length > 5
+      end
+      UI.messagebox(msg, MB_MULTILINE)
+      Logger.info('Миграция библиотеки в v4 завершена', 'migrated' => report['migrated'], 'skipped' => report['skipped'], 'new_root' => report['new_root'])
+      report
+    rescue ArgumentError => error
+      UI.messagebox(error.message)
+      nil
+    rescue StandardError => error
+      show_error('Перенос библиотеки', error)
+      nil
+    end
+
     def open_log_file
       path = Logger.file_path
       FileUtils.mkdir_p(File.dirname(path))
@@ -2350,6 +2386,10 @@ menu.add_item(@commands[:open_log])
 
       dialog.add_action_callback('create_new_library_root') do |_action_context, _payload|
         create_new_library_root
+      end
+
+      dialog.add_action_callback('migrate_library_to_v4') do |_action_context, _payload|
+        migrate_library_to_v4
       end
     end
 

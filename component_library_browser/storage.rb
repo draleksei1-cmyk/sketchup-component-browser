@@ -1441,6 +1441,120 @@ module Drale
         raise ArgumentError, 'Legacy libraries are read-only; create a new library folder.' if @format == :legacy_read_only
       end
 
+      # Автоперенос старой библиотеки (library_index.json + categories/*.skp)
+      # в новый формат v4 (assets/<uuid>/model.skp + preview.png + asset.json).
+      # Возвращает отчёт { migrated, skipped, errors, new_root }.
+      # Старые файлы не удаляются — библиотека остаётся нетронутой.
+      def migrate_legacy_to_v4!(progress: nil)
+        raise ArgumentError, 'Миграция доступна только для библиотеки старого формата.' unless @format == :legacy_read_only
+
+        legacy_items = deep_copy(@index['items'])
+        legacy_categories = deep_copy(@index['categories'])
+        raise ArgumentError, 'В старой библиотеке нет элементов для переноса.' if legacy_items.empty?
+
+        # Новая библиотека создаётся рядом: <старая>-v4
+        base = File.basename(@lib_root)
+        parent = File.dirname(@lib_root)
+        new_root = File.join(parent, "#{base}-v4")
+        suffix = 2
+        while File.directory?(new_root)
+          new_root = File.join(parent, "#{base}-v#{suffix}")
+          suffix += 1
+        end
+        FileUtils.mkdir_p(new_root)
+
+        migrated = 0
+        skipped = 0
+        errors = []
+
+        legacy_items.each_with_index do |item, idx|
+          begin
+            src_skp = FS.to_full_path(@lib_root, item['skp_rel_path'])
+            unless File.file?(src_skp)
+              skipped += 1
+              errors << "Файл не найден: #{item['name']}"
+              next
+            end
+
+            asset_id = SecureRandom.uuid
+            asset_dir = File.join(FS.assets_root(new_root), asset_id)
+            FileUtils.mkdir_p(asset_dir)
+
+            FileUtils.cp(src_skp, File.join(asset_dir, 'model.skp'))
+            src_png = FS.to_full_path(@lib_root, item['thumb_rel_path'])
+            FileUtils.cp(src_png, File.join(asset_dir, 'preview.png')) if item['thumb_rel_path'].to_s.start_with?('previews/') && File.file?(src_png)
+            # Старое превью могло лежать рядом с категорией
+            unless File.file?(File.join(asset_dir, 'preview.png'))
+              legacy_png = File.join(File.dirname(src_skp), File.basename(src_skp, '.skp') + '.png')
+              FileUtils.cp(legacy_png, File.join(asset_dir, 'preview.png')) if File.file?(legacy_png)
+            end
+
+            created_at = valid_timestamp?(item['created_at']) ? item['created_at'] : FS.now_iso8601
+            updated_at = valid_timestamp?(item['updated_at']) ? item['updated_at'] : FS.now_iso8601
+            updated_at = created_at if Time.iso8601(updated_at) < Time.iso8601(created_at)
+
+            manifest = {
+              'asset_version' => 1,
+              'id' => asset_id,
+              'name' => FS.normalize_display_name(item['name']),
+              'category' => FS.normalize_category_name(item['category']),
+              'description' => normalize_description(item['description']),
+              'tags' => FS.normalize_tags(item['tags']),
+              'favorite' => !!item['favorite'],
+              'created_at' => created_at,
+              'updated_at' => updated_at,
+              'last_used_at' => valid_timestamp?(item['last_used_at']) ? item['last_used_at'] : nil,
+              'source' => item['source'].to_s.empty? ? 'component' : item['source'].to_s,
+              'file_size_bytes' => normalize_integer(item['file_size_bytes']),
+              'bbox_xyz' => normalize_bbox(item['bbox_xyz']),
+              'faces_count' => normalize_integer(item['faces_count']),
+              'edges_count' => normalize_integer(item['edges_count']),
+              'materials_count' => normalize_integer(item['materials_count']),
+              'content_hash' => normalize_hash(item['content_hash']),
+              'placement' => Services::Placement.normalize(item['placement'])
+            }
+            atomic_write_json(File.join(asset_dir, 'asset.json'), manifest)
+            migrated += 1
+            progress.call(idx + 1, legacy_items.length, item['name']) if progress
+          rescue StandardError => e
+            skipped += 1
+            errors << "#{item['name']}: #{e.message}"
+          end
+        end
+
+        raise ArgumentError, "Не удалось перенести ни один элемент." if migrated.zero?
+
+        # Каталог новой библиотеки
+        assets, = load_v4_assets_for_root(new_root)
+        catalog = {
+          'version' => FORMAT_V4,
+          'created_at' => FS.now_iso8601,
+          'updated_at' => FS.now_iso8601,
+          'assets' => assets.map { |a| { 'id' => a['id'], 'name' => a['name'], 'category' => a['category'] } },
+          'categories' => legacy_categories.reject { |c| assets.any? { |a| FS.same_name?(a['category'], c) } }.map { |c| FS.normalize_category_name(c) }.uniq.sort
+        }
+        atomic_write_json(FS.catalog_path(new_root), catalog)
+
+        {
+          'migrated' => migrated,
+          'skipped' => skipped,
+          'errors' => errors,
+          'new_root' => new_root
+        }
+      end
+
+      # Читает ассеты произвольной v4-библиотеки (для миграции — читаем новую папку).
+      def load_v4_assets_for_root(root)
+        saved_root = @lib_root
+        saved_format = @format
+        @lib_root = root
+        @format = :v4
+        load_v4_assets
+      ensure
+        @lib_root = saved_root
+        @format = saved_format
+      end
+
       def valid_timestamp?(value)
         return false unless value.is_a?(String) && value.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\z/)
 
