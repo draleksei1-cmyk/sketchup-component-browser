@@ -20,6 +20,7 @@ require_relative 'services/model_definitions'
 require_relative 'services/placement'
 require_relative 'services/replacer'
 require_relative 'services/insert_diagnostics'
+require_relative 'services/asset_memory'
 require_relative 'services/metadata'
 require_relative 'services/preview_regenerator'
 require_relative 'services/pack_transfer'
@@ -319,6 +320,7 @@ module Drale
       )
       definition = ensure_component_definition_for_insert(definition)
       mark_in_model_items_dirty!
+      stamp_asset_memory!(definition, item)
       start_native_brush_loop(definition, item_id: item['id'], continuous: false)
       arm_native_brush_wait_for_insert
       Services::InsertDiagnostics.log_insert_start(item_id: item['id'], skp_path: skp_path, method: :button)
@@ -360,6 +362,7 @@ module Drale
       definition = ensure_component_definition_for_insert(definition)
 
       mark_in_model_items_dirty!
+      stamp_asset_memory!(definition, item)
       start_native_brush_loop(definition, item_id: item['id'], continuous: true)
       arm_native_brush_wait_for_insert
       Services::InsertDiagnostics.log_insert_start(item_id: item['id'], skp_path: skp_path, method: :brush)
@@ -2676,8 +2679,17 @@ menu.add_item(@commands[:open_log])
 
     def build_in_model_items
       entries = Services::ModelDefinitions.used_definitions(Sketchup.active_model)
+      items_by_id = {}
+      @storage.index['items'].each { |item| items_by_id[item['id'].to_s] = item }
       entries.map do |entry|
         definition = entry['definition']
+        memory = Services::AssetMemory.read(definition)
+        item = memory ? items_by_id[memory['asset_id']] : nil
+        current_hash = nil
+        if item && !item['content_hash'].to_s.empty?
+          current_hash = compute_content_hash(FS.to_full_path(@storage.lib_root, item['skp_rel_path']))
+        end
+        status = Services::AssetMemory.status_for(memory, item, current_hash)
         {
           'kind' => 'in_model',
           'definition_guid' => entry['definition_guid'],
@@ -2686,11 +2698,24 @@ menu.add_item(@commands[:open_log])
           'category' => "\u0412 \u043c\u043e\u0434\u0435\u043b\u0438",
           'description' => '',
           'tags' => [],
-          'thumb_url' => in_model_thumb_url(definition)
+          'thumb_url' => in_model_thumb_url(definition),
+          'library_item_id' => item && item['id'],
+          'asset_status' => status
         }
       end
     rescue StandardError
       []
+    end
+
+    # Ставит «память» на определение перед вставкой: откуда взят и какой версии.
+    def stamp_asset_memory!(definition, item)
+      Services::AssetMemory.stamp!(
+        definition,
+        item: item,
+        library_signature: Services::AssetMemory.library_signature_for(@storage.lib_root)
+      )
+    rescue StandardError
+      nil
     end
 
     def cached_in_model_items
